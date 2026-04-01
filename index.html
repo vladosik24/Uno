@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>UNO Ukraine 🇺🇦</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            user-select: none;
+        }
+        body {
+            background: linear-gradient(135deg, #0057b7 0%, #ffd700 100%);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .game-container {
+            max-width: 500px;
+            width: 100%;
+            background: rgba(0,0,0,0.7);
+            border-radius: 30px;
+            padding: 20px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+            backdrop-filter: blur(5px);
+        }
+        .top-card {
+            background: white;
+            border-radius: 20px;
+            padding: 15px;
+            margin-bottom: 20px;
+            text-align: center;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        .top-card h3 {
+            margin: 0 0 10px;
+            color: #2c3e66;
+        }
+        .card {
+            display: inline-block;
+            width: 100px;
+            height: 140px;
+            background: white;
+            border-radius: 15px;
+            margin: 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            cursor: pointer;
+            transition: transform 0.2s;
+            text-align: center;
+            vertical-align: top;
+            position: relative;
+            font-weight: bold;
+        }
+        .card:hover {
+            transform: scale(1.05);
+        }
+        .card.disabled {
+            opacity: 0.5;
+            pointer-events: none;
+        }
+        .card-content {
+            padding: 20px 0;
+            font-size: 28px;
+        }
+        .card-color-red { background: #e74c3c; color: white; }
+        .card-color-blue { background: #3498db; color: white; }
+        .card-color-yellow { background: #f1c40f; color: #2c3e50; }
+        .card-color-green { background: #2ecc71; color: white; }
+        .card-special { background: #9b59b6; color: white; font-size: 20px; }
+
+        .hand {
+            background: rgba(0,0,0,0.4);
+            border-radius: 20px;
+            padding: 15px;
+            margin: 20px 0;
+            text-align: center;
+        }
+        .hand h3 {
+            color: white;
+            margin: 0 0 10px;
+        }
+        button {
+            background: #ffd700;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 50px;
+            font-size: 16px;
+            font-weight: bold;
+            color: #0057b7;
+            margin: 5px;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        button:active {
+            transform: scale(0.97);
+        }
+        .message {
+            background: #2c3e66;
+            color: white;
+            border-radius: 20px;
+            padding: 10px;
+            text-align: center;
+            margin-top: 15px;
+        }
+        @media (max-width: 500px) {
+            .card { width: 70px; height: 100px; margin: 4px; }
+            .card-content { font-size: 20px; padding: 12px 0; }
+        }
+    </style>
+</head>
+<body>
+<div class="game-container">
+    <div class="top-card">
+        <h3>🇺🇦 Карта на столі 🇺🇦</h3>
+        <div id="tableCard" class="card"></div>
+    </div>
+
+    <div class="hand">
+        <h3>Ваші карти</h3>
+        <div id="playerHand"></div>
+        <div>
+            <button id="drawBtn">Взяти карту</button>
+            <button id="resetBtn">Нова гра</button>
+        </div>
+    </div>
+    <div id="message" class="message"></div>
+</div>
+
+<script>
+    // ------------------- Спрощена колода UNO (українська тематика) -------------------
+    const colors = ['blue', 'yellow', 'red', 'green'];
+    const numbers = ['0','1','2','3','4','5','6','7','8','9'];
+    const specials = ['skip', 'draw2', 'wild'];
+    const ukrSpecial = { wild: 'Слава Україні!' };
+
+    let deck = [];
+    let playerHand = [];
+    let tableCard = null;
+
+    function initDeck() {
+        deck = [];
+        // звичайні числові карти
+        for (let color of colors) {
+            for (let num of numbers) {
+                deck.push({ type: 'number', color: color, value: num });
+                if (num !== '0') deck.push({ type: 'number', color: color, value: num }); // дві копії для 1-9
+            }
+        }
+        // спеціальні карти
+        for (let color of colors) {
+            for (let s of specials) {
+                if (s === 'wild') continue;
+                deck.push({ type: 'special', color: color, value: s });
+                deck.push({ type: 'special', color: color, value: s });
+            }
+        }
+        // дикі карти (4 штуки)
+        for (let i=0; i<4; i++) deck.push({ type: 'wild', color: null, value: 'wild' });
+
+        shuffle(deck);
+    }
+
+    function shuffle(arr) {
+        for (let i = arr.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [arr[i], arr[j]] = [arr[j], arr[i]];
+        }
+    }
+
+    function drawCard() {
+        if (deck.length === 0) {
+            // якщо колода пуста, збираємо зі скидання, крім верхньої карти
+            showMessage("Колода перетасована!");
+            // спрощено: просто перестворюємо колоду
+            initDeck();
+            // видаляємо карту, що на столі, щоб уникнути дубліката (але можна простіше)
+            deck = deck.filter(c => !(c.type === tableCard.type && c.color === tableCard.color && c.value === tableCard.value));
+        }
+        const card = deck.pop();
+        playerHand.push(card);
+        renderHand();
+        checkGameEnd();
+    }
+
+    function playCard(card, index) {
+        if (!isValidMove(card, tableCard)) {
+            showMessage("Цю карту не можна зіграти!");
+            return false;
+        }
+
+        // граємо карту
+        playerHand.splice(index, 1);
+        tableCard = card;
+
+        // обробка спеціальних ефектів (спрощено)
+        if (card.type === 'special') {
+            if (card.value === 'skip') {
+                showMessage("Пропуск ходу! (проти суперника) – тут просто повідомлення");
+            } else if (card.value === 'draw2') {
+                drawCard();
+                drawCard();
+                showMessage("Ви взяли 2 карти!");
+            }
+        } else if (card.type === 'wild') {
+            // вибір кольору: пропонуємо користувачеві (спрощено – автоматично жовтий)
+            card.color = 'yellow'; // Український жовтий
+            showMessage("Дика карта! Колір змінюється на жовтий 🇺🇦");
+        }
+
+        renderTable();
+        renderHand();
+
+        if (playerHand.length === 0) {
+            showMessage("🎉 ПЕРЕМОГА! Ви виграли! 🎉");
+            document.getElementById("drawBtn").disabled = true;
+        }
+        return true;
+    }
+
+    function isValidMove(card, topCard) {
+        if (card.type === 'wild') return true;
+        if (card.color === topCard.color) return true;
+        if (card.type === 'number' && topCard.type === 'number' && card.value === topCard.value) return true;
+        if (card.type === 'special' && topCard.type === 'special' && card.value === topCard.value) return true;
+        // якщо верхня карта числова, а спеціальна має той самий колір
+        if (topCard.type === 'number' && card.color === topCard.color) return true;
+        if (topCard.type === 'special' && card.color === topCard.color) return true;
+        return false;
+    }
+
+    function renderCard(card, isClickable = true, index = null) {
+        const cardDiv = document.createElement('div');
+        cardDiv.className = 'card';
+        let bgClass = '';
+        let content = '';
+
+        if (card.type === 'number') {
+            bgClass = `card-color-${card.color}`;
+            content = `<div class="card-content">${card.value}</div>`;
+        } else if (card.type === 'special') {
+            bgClass = `card-color-${card.color}`;
+            let text = card.value === 'skip' ? '🚫' : (card.value === 'draw2' ? '+2' : '');
+            content = `<div class="card-content">${text}</div>`;
+        } else if (card.type === 'wild') {
+            bgClass = 'card-special';
+            content = `<div class="card-content">🇺🇦<br>Слава!</div>`;
+        }
+
+        cardDiv.className += ' ' + bgClass;
+        cardDiv.innerHTML = content;
+
+        if (isClickable && index !== null) {
+            cardDiv.style.cursor = 'pointer';
+            cardDiv.addEventListener('click', () => playCard(card, index));
+        } else {
+            cardDiv.classList.add('disabled');
+        }
+        return cardDiv;
+    }
+
+    function renderTable() {
+        const container = document.getElementById('tableCard');
+        container.innerHTML = '';
+        if (tableCard) {
+            container.appendChild(renderCard(tableCard, false));
+        }
+    }
+
+    function renderHand() {
+        const handDiv = document.getElementById('playerHand');
+        handDiv.innerHTML = '';
+        playerHand.forEach((card, idx) => {
+            handDiv.appendChild(renderCard(card, true, idx));
+        });
+        if (playerHand.length === 0) {
+            handDiv.innerHTML = '<p style="color:white;">✨ Вітаю! Ви перемогли! ✨</p>';
+        }
+    }
+
+    function showMessage(msg) {
+        const msgDiv = document.getElementById('message');
+        msgDiv.innerText = msg;
+        setTimeout(() => {
+            if (msgDiv.innerText === msg) msgDiv.innerText = '';
+        }, 2000);
+    }
+
+    function startNewGame() {
+        initDeck();
+        playerHand = [];
+        // початковий роздаток: 5 карт гравцю
+        for (let i = 0; i < 5; i++) drawCard();
+        // витягуємо першу карту на стіл
+        tableCard = deck.pop();
+        // якщо перша карта дика – замінимо на звичайну
+        while (tableCard.type === 'wild') {
+            deck.push(tableCard);
+            shuffle(deck);
+            tableCard = deck.pop();
+        }
+        renderTable();
+        renderHand();
+        showMessage("Нова гра! Ваш хід.");
+        document.getElementById("drawBtn").disabled = false;
+        checkGameEnd();
+    }
+
+    function checkGameEnd() {
+        if (playerHand.length === 0) {
+            showMessage("🏆 ВИ ПЕРЕМОГЛИ! 🏆");
+            document.getElementById("drawBtn").disabled = true;
+        }
+    }
+
+    // Ініціалізація
+    startNewGame();
+
+    document.getElementById("drawBtn").addEventListener("click", () => {
+        if (playerHand.length > 0) {
+            drawCard();
+        } else {
+            showMessage("Гра закінчена, почніть нову!");
+        }
+    });
+    document.getElementById("resetBtn").addEventListener("click", startNewGame);
+</script>
+</body>
+</html>
