@@ -4,13 +4,35 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>UNO Ukraine - Multiplayer</title>
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
     <style>
-        /* Стилі залишаються такими ж, як у попередній версії, можна трохи доповнити для форми */
+        /* Стилі (ті самі, що були, тільки додано для лобі) */
+        * { box-sizing: border-box; user-select: none; }
+        body {
+            background: linear-gradient(135deg, #0057b7 0%, #ffd700 100%);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .game-container {
+            max-width: 500px;
+            width: 100%;
+            background: rgba(0,0,0,0.7);
+            border-radius: 30px;
+            padding: 20px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+            backdrop-filter: blur(5px);
+        }
         .lobby {
             background: rgba(0,0,0,0.8);
             border-radius: 20px;
             padding: 20px;
-            margin-bottom: 20px;
             text-align: center;
         }
         .lobby input, .lobby button {
@@ -26,40 +48,98 @@
             font-weight: bold;
             cursor: pointer;
         }
+        .top-card {
+            background: white;
+            border-radius: 20px;
+            padding: 15px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        .card {
+            display: inline-block;
+            width: 100px;
+            height: 140px;
+            background: white;
+            border-radius: 15px;
+            margin: 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            cursor: pointer;
+            transition: transform 0.2s;
+            text-align: center;
+            vertical-align: top;
+            position: relative;
+            font-weight: bold;
+        }
+        .card:hover { transform: scale(1.05); }
+        .card.disabled { opacity: 0.5; pointer-events: none; }
+        .card-content { padding: 20px 0; font-size: 28px; }
+        .card-color-red { background: #e74c3c; color: white; }
+        .card-color-blue { background: #3498db; color: white; }
+        .card-color-yellow { background: #f1c40f; color: #2c3e50; }
+        .card-color-green { background: #2ecc71; color: white; }
+        .card-special { background: #9b59b6; color: white; font-size: 20px; }
+        .hand {
+            background: rgba(0,0,0,0.4);
+            border-radius: 20px;
+            padding: 15px;
+            margin: 20px 0;
+            text-align: center;
+        }
         .players-list {
             display: flex;
             justify-content: space-around;
             margin: 10px 0;
             color: white;
+            flex-wrap: wrap;
         }
         .player {
             background: rgba(255,255,255,0.2);
             padding: 5px 10px;
             border-radius: 20px;
+            margin: 5px;
         }
         .player.current {
             background: #ffd700;
             color: #0057b7;
             font-weight: bold;
         }
-        .card.other-player {
-            opacity: 0.7;
-            filter: blur(2px);
-            cursor: default;
+        button {
+            background: #ffd700;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 50px;
+            font-size: 16px;
+            font-weight: bold;
+            color: #0057b7;
+            margin: 5px;
+            cursor: pointer;
         }
-        /* решта стилів з попередньої версії */
+        .message {
+            background: #2c3e66;
+            color: white;
+            border-radius: 20px;
+            padding: 10px;
+            text-align: center;
+            margin-top: 15px;
+        }
+        @media (max-width: 500px) {
+            .card { width: 70px; height: 100px; margin: 4px; }
+            .card-content { font-size: 20px; padding: 12px 0; }
+        }
     </style>
 </head>
 <body>
 <div class="game-container">
-    <div class="lobby" id="lobby">
-        <h3>🎮 UNO Ukraine – Гра з друзями</h3>
+    <!-- Лобі (спочатку видиме) -->
+    <div id="lobby" class="lobby">
+        <h3>🎮 UNO Ukraine – гра з друзями</h3>
         <input type="text" id="playerName" placeholder="Ваше ім'я" value="Гравець">
         <input type="text" id="roomCode" placeholder="Код кімнати">
         <button id="createRoom">Створити кімнату</button>
         <button id="joinRoom">Приєднатися</button>
     </div>
 
+    <!-- Ігрова зона (спочатку прихована) -->
     <div id="gameArea" style="display: none;">
         <div class="top-card">
             <h3>🇺🇦 Карта на столі 🇺🇦</h3>
@@ -81,138 +161,40 @@
 </div>
 
 <script>
-    // ------------------- WebSocket з'єднання -------------------
-    let socket = null;
-    let playerId = null;
-    let roomId = null;
-    let currentGameState = null;
-
-    // Функції для відображення гри (адаптовані під мультиплеєр)
-    function renderGame(state) {
-        if (!state) return;
-        // Відображаємо карту на столі
-        const tableDiv = document.getElementById('tableCard');
-        tableDiv.innerHTML = '';
-        if (state.tableCard) {
-            tableDiv.appendChild(renderCard(state.tableCard, false));
-        }
-
-        // Відображаємо список гравців
-        const playersDiv = document.getElementById('playersList');
-        playersDiv.innerHTML = '';
-        for (let [id, player] of Object.entries(state.players)) {
-            const div = document.createElement('div');
-            div.className = 'player' + (state.currentPlayer === id ? ' current' : '');
-            div.innerText = `${player.name} (${player.cardsCount} карт)`;
-            playersDiv.appendChild(div);
-        }
-
-        // Відображаємо руку поточного гравця
-        const handDiv = document.getElementById('playerHand');
-        handDiv.innerHTML = '';
-        const myCards = state.players[playerId]?.cards || [];
-        myCards.forEach((card, idx) => {
-            handDiv.appendChild(renderCard(card, true, idx));
-        });
-        if (myCards.length === 0) {
-            handDiv.innerHTML = '<p style="color:white;">✨ Ви перемогли! ✨</p>';
-        }
-
-        // Повідомлення про хід
-        const isMyTurn = (state.currentPlayer === playerId);
-        const msgDiv = document.getElementById('message');
-        if (!isMyTurn) {
-            msgDiv.innerText = `Хід гравця: ${state.players[state.currentPlayer]?.name}`;
-        } else {
-            msgDiv.innerText = 'Ваш хід!';
-        }
-    }
-
-    function sendMove(action, data) {
-        if (socket && socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ action, ...data }));
-        }
-    }
-
-    // Обробка натискання на карту
-    function playCard(card, index) {
-        if (currentGameState && currentGameState.currentPlayer === playerId) {
-            sendMove('playCard', { card, index });
-        } else {
-            showMessage("Зараз не ваш хід!");
-        }
-    }
-
-    function drawCard() {
-        if (currentGameState && currentGameState.currentPlayer === playerId) {
-            sendMove('drawCard', {});
-        } else {
-            showMessage("Зараз не ваш хід!");
-        }
-    }
-
-    // Підключення WebSocket
-    function connectToServer(room, playerName, isCreating) {
-        // Замініть URL на ваш WebSocket сервер
-        const wsUrl = "wss://ваш-сервер.com"; // або ws://localhost:8080 для тесту
-        socket = new WebSocket(wsUrl);
-
-        socket.onopen = () => {
-            if (isCreating) {
-                socket.send(JSON.stringify({ action: 'createRoom', playerName }));
-            } else {
-                socket.send(JSON.stringify({ action: 'joinRoom', roomCode: room, playerName }));
-            }
-        };
-
-        socket.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            switch (data.type) {
-                case 'roomCreated':
-                    playerId = data.playerId;
-                    roomId = data.roomCode;
-                    document.getElementById('lobby').style.display = 'none';
-                    document.getElementById('gameArea').style.display = 'block';
-                    showMessage(`Кімната ${roomId} створена. Поділіться кодом з друзями!`);
-                    break;
-                case 'joined':
-                    playerId = data.playerId;
-                    roomId = data.roomCode;
-                    document.getElementById('lobby').style.display = 'none';
-                    document.getElementById('gameArea').style.display = 'block';
-                    showMessage(`Ви приєдналися до кімнати ${roomId}`);
-                    break;
-                case 'gameState':
-                    currentGameState = data.state;
-                    renderGame(currentGameState);
-                    break;
-                case 'error':
-                    showMessage(data.message);
-                    break;
-            }
-        };
-    }
-
-    // Обробники інтерфейсу
-    document.getElementById('createRoom').onclick = () => {
-        const name = document.getElementById('playerName').value.trim() || "Гравець";
-        connectToServer(null, name, true);
+    // ---------- Firebase конфігурація ----------
+    const firebaseConfig = {
+        apiKey: "ВАШ_API_KEY",
+        authDomain: "ВАШ_PROJECT_ID.firebaseapp.com",
+        databaseURL: "https://ВАШ_PROJECT_ID-default-rtdb.europe-west1.firebasedatabase.app",
+        projectId: "ВАШ_PROJECT_ID",
+        storageBucket: "ВАШ_PROJECT_ID.appspot.com",
+        messagingSenderId: "XXXXXXXXXX",
+        appId: "1:XXXXXXXXXX:web:XXXXXXXXXX"
     };
-    document.getElementById('joinRoom').onclick = () => {
-        const name = document.getElementById('playerName').value.trim() || "Гравець";
-        const room = document.getElementById('roomCode').value.trim();
-        if (!room) {
-            alert("Введіть код кімнати");
-            return;
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    // ---------- Глобальні змінні ----------
+    let currentRoom = null;       // код кімнати
+    let playerId = null;          // унікальний ID гравця (зберігається в localStorage)
+    let playerName = "";
+    let gameStateRef = null;      // посилання на /game/{roomId}
+    let playersRef = null;        // посилання на /players/{roomId}
+    let myCardsRef = null;        // посилання на /cards/{roomId}/{playerId}
+
+    // ---------- Допоміжні функції ----------
+    function generateId() {
+        return Math.random().toString(36).substring(2, 10);
+    }
+
+    function getPlayerId() {
+        let id = localStorage.getItem("uno_player_id");
+        if (!id) {
+            id = generateId();
+            localStorage.setItem("uno_player_id", id);
         }
-        connectToServer(room, name, false);
-    };
-    document.getElementById('drawBtn').onclick = drawCard;
-    document.getElementById('resetBtn').onclick = () => {
-        if (confirm("Почати нову гру?")) {
-            sendMove('resetGame', {});
-        }
-    };
+        return id;
+    }
 
     function showMessage(msg) {
         const msgDiv = document.getElementById('message');
@@ -222,12 +204,374 @@
         }, 3000);
     }
 
-    // Функція renderCard та інші допоміжні (аналогічні до попередньої версії)
-    function renderCard(card, isClickable = false, index = null) {
-        // ... (той самий код, що в попередньому index.html)
-        // Тут потрібно скопіювати функцію renderCard з попередньої версії
-        // Для стислості я її не дублюю, але вона повинна бути повністю такою ж.
+    // ---------- Логіка колоди (така сама, як у попередній версії) ----------
+    const colors = ['blue', 'yellow', 'red', 'green'];
+    const numbers = ['0','1','2','3','4','5','6','7','8','9'];
+    const specials = ['skip', 'draw2', 'wild'];
+
+    function createDeck() {
+        let deck = [];
+        for (let color of colors) {
+            for (let num of numbers) {
+                deck.push({ type: 'number', color: color, value: num });
+                if (num !== '0') deck.push({ type: 'number', color: color, value: num });
+            }
+        }
+        for (let color of colors) {
+            for (let s of specials) {
+                if (s === 'wild') continue;
+                deck.push({ type: 'special', color: color, value: s });
+                deck.push({ type: 'special', color: color, value: s });
+            }
+        }
+        for (let i=0; i<4; i++) deck.push({ type: 'wild', color: null, value: 'wild' });
+        return shuffle(deck);
     }
+
+    function shuffle(deck) {
+        for (let i = deck.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [deck[i], deck[j]] = [deck[j], deck[i]];
+        }
+        return deck;
+    }
+
+    // Перевірка чи можна зіграти карту
+    function isValidMove(card, topCard) {
+        if (card.type === 'wild') return true;
+        if (card.color === topCard.color) return true;
+        if (card.type === 'number' && topCard.type === 'number' && card.value === topCard.value) return true;
+        if (card.type === 'special' && topCard.type === 'special' && card.value === topCard.value) return true;
+        if (topCard.type === 'number' && card.color === topCard.color) return true;
+        if (topCard.type === 'special' && card.color === topCard.color) return true;
+        return false;
+    }
+
+    // ---------- Рендеринг карт (спільний для всіх) ----------
+    function renderCard(card, isClickable = false, onClick = null) {
+        const cardDiv = document.createElement('div');
+        cardDiv.className = 'card';
+        let bgClass = '';
+        let content = '';
+
+        if (card.type === 'number') {
+            bgClass = `card-color-${card.color}`;
+            content = `<div class="card-content">${card.value}</div>`;
+        } else if (card.type === 'special') {
+            bgClass = `card-color-${card.color}`;
+            let text = card.value === 'skip' ? '🚫' : (card.value === 'draw2' ? '+2' : '');
+            content = `<div class="card-content">${text}</div>`;
+        } else if (card.type === 'wild') {
+            bgClass = 'card-special';
+            content = `<div class="card-content">🇺🇦<br>Слава!</div>`;
+        }
+
+        cardDiv.className += ' ' + bgClass;
+        cardDiv.innerHTML = content;
+
+        if (isClickable && onClick) {
+            cardDiv.style.cursor = 'pointer';
+            cardDiv.addEventListener('click', onClick);
+        } else {
+            cardDiv.classList.add('disabled');
+        }
+        return cardDiv;
+    }
+
+    function renderTableCard(card) {
+        const container = document.getElementById('tableCard');
+        container.innerHTML = '';
+        if (card) container.appendChild(renderCard(card, false));
+    }
+
+    // ---------- Отримання даних із Firebase та оновлення UI ----------
+    function subscribeToGame(roomId, myId) {
+        // Слухаємо загальний стан гри (карта на столі, поточний гравець, колода тощо)
+        gameStateRef = db.ref(`game/${roomId}`);
+        gameStateRef.on('value', (snapshot) => {
+            const state = snapshot.val();
+            if (state) {
+                renderTableCard(state.tableCard);
+                document.getElementById('playersList').innerHTML = '';
+                if (state.players) {
+                    for (let pid in state.players) {
+                        const p = state.players[pid];
+                        const div = document.createElement('div');
+                        div.className = 'player' + (state.currentPlayer === pid ? ' current' : '');
+                        div.innerText = `${p.name} (${p.cardCount} карт)`;
+                        document.getElementById('playersList').appendChild(div);
+                    }
+                }
+                const isMyTurn = (state.currentPlayer === myId);
+                const msgDiv = document.getElementById('message');
+                if (!isMyTurn) {
+                    const currentPlayerName = state.players[state.currentPlayer]?.name || 'інший гравець';
+                    msgDiv.innerText = `Хід: ${currentPlayerName}`;
+                } else {
+                    msgDiv.innerText = 'Ваш хід!';
+                }
+            }
+        });
+
+        // Слухаємо свої карти
+        myCardsRef = db.ref(`cards/${roomId}/${myId}`);
+        myCardsRef.on('value', (snapshot) => {
+            const cards = snapshot.val() || [];
+            const handDiv = document.getElementById('playerHand');
+            handDiv.innerHTML = '';
+            cards.forEach((card, idx) => {
+                handDiv.appendChild(renderCard(card, true, () => {
+                    // Клік по карті – спроба зіграти
+                    if (currentGameState?.currentPlayer === myId) {
+                        playCard(card, idx);
+                    } else {
+                        showMessage("Зараз не ваш хід!");
+                    }
+                }));
+            });
+            if (cards.length === 0) {
+                handDiv.innerHTML = '<p style="color:white;">✨ Ви перемогли! ✨</p>';
+                showMessage("Вітаю! Ви виграли гру!");
+            }
+        });
+    }
+
+    // Глобальне посилання на стан (щоб знати currentPlayer)
+    let currentGameState = null;
+    function updateGameState(snapshot) {
+        currentGameState = snapshot.val();
+    }
+
+    // Дія: зіграти карту
+    async function playCard(card, index) {
+        // Отримуємо поточний стан гри та свої карти
+        const gameSnapshot = await db.ref(`game/${currentRoom}`).once('value');
+        const game = gameSnapshot.val();
+        if (!game || game.currentPlayer !== playerId) {
+            showMessage("Зараз не ваш хід!");
+            return;
+        }
+        const topCard = game.tableCard;
+        if (!isValidMove(card, topCard)) {
+            showMessage("Цю карту не можна зіграти!");
+            return;
+        }
+
+        // Виконуємо хід: видаляємо карту зі своєї руки, оновлюємо карту на столі, змінюємо гравця
+        const myCardsSnapshot = await db.ref(`cards/${currentRoom}/${playerId}`).once('value');
+        let myCards = myCardsSnapshot.val() || [];
+        const cardIndex = myCards.findIndex(c => JSON.stringify(c) === JSON.stringify(card));
+        if (cardIndex === -1) return;
+
+        myCards.splice(cardIndex, 1);
+        await db.ref(`cards/${currentRoom}/${playerId}`).set(myCards);
+
+        // Оновлюємо карту на столі
+        let newTableCard = card;
+        let nextPlayer = getNextPlayer(game.players, game.currentPlayer, game.direction);
+        let drawStack = game.drawStack || 0;
+        let direction = game.direction;
+
+        // Обробка спеціальних карт
+        if (card.type === 'special') {
+            if (card.value === 'skip') {
+                nextPlayer = getNextPlayer(game.players, nextPlayer, direction);
+            } else if (card.value === 'draw2') {
+                drawStack += 2;
+                // Тут потрібно буде змусити наступного гравця взяти карти (реалізуємо при ході)
+            }
+        } else if (card.type === 'wild') {
+            // Можна запропонувати вибір кольору, але для простоти зробимо жовтий
+            newTableCard.color = 'yellow';
+        }
+
+        // Оновлюємо стан гри
+        await db.ref(`game/${currentRoom}`).update({
+            tableCard: newTableCard,
+            currentPlayer: nextPlayer,
+            drawStack: drawStack,
+            direction: direction
+        });
+
+        // Перевірка перемоги
+        if (myCards.length === 0) {
+            showMessage("🎉 ПЕРЕМОГА! 🎉");
+            // Можна завершити гру
+        }
+    }
+
+    function getNextPlayer(players, current, direction) {
+        const playerIds = Object.keys(players);
+        const idx = playerIds.indexOf(current);
+        let nextIdx = (idx + direction + playerIds.length) % playerIds.length;
+        return playerIds[nextIdx];
+    }
+
+    // Взяти карту
+    async function drawCardAction() {
+        const gameSnapshot = await db.ref(`game/${currentRoom}`).once('value');
+        const game = gameSnapshot.val();
+        if (!game || game.currentPlayer !== playerId) {
+            showMessage("Зараз не ваш хід!");
+            return;
+        }
+
+        // Отримуємо колоду (зберігається в /game/{roomId}/deck)
+        let deck = game.deck || [];
+        if (deck.length === 0) {
+            // Перетасовуємо скидання
+            // Спрощено: створюємо нову колоду
+            deck = createDeck();
+        }
+        const newCard = deck.pop();
+
+        // Додаємо карту гравцю
+        const myCardsSnapshot = await db.ref(`cards/${currentRoom}/${playerId}`).once('value');
+        let myCards = myCardsSnapshot.val() || [];
+        myCards.push(newCard);
+        await db.ref(`cards/${currentRoom}/${playerId}`).set(myCards);
+
+        // Оновлюємо колоду та передаємо хід
+        const nextPlayer = getNextPlayer(game.players, game.currentPlayer, game.direction);
+        await db.ref(`game/${currentRoom}`).update({
+            deck: deck,
+            currentPlayer: nextPlayer
+        });
+    }
+
+    // Скидання гри (нова гра)
+    async function resetGame() {
+        if (!currentRoom) return;
+        const deck = createDeck();
+        const playersSnapshot = await db.ref(`players/${currentRoom}`).once('value');
+        const players = playersSnapshot.val() || {};
+        const playerIds = Object.keys(players);
+        if (playerIds.length < 2) {
+            showMessage("Потрібно щонайменше 2 гравці для гри!");
+            return;
+        }
+        // Роздаємо карти
+        let hands = {};
+        for (let pid of playerIds) {
+            hands[pid] = [];
+            for (let i=0; i<5; i++) hands[pid].push(deck.pop());
+        }
+        let tableCard = deck.pop();
+        while (tableCard.type === 'wild') {
+            deck.push(tableCard);
+            shuffle(deck);
+            tableCard = deck.pop();
+        }
+        // Зберігаємо
+        await db.ref(`cards/${currentRoom}`).set(hands);
+        await db.ref(`game/${currentRoom}`).set({
+            deck: deck,
+            tableCard: tableCard,
+            players: players,
+            currentPlayer: playerIds[0],
+            direction: 1,
+            drawStack: 0
+        });
+        showMessage("Нова гра розпочата!");
+    }
+
+    // ---------- Створення/приєднання до кімнати ----------
+    async function createRoom(name) {
+        const roomCode = generateId().substring(0, 6).toUpperCase();
+        const myId = getPlayerId();
+        // Створюємо структуру в Firebase
+        await db.ref(`rooms/${roomCode}`).set({ owner: myId, createdAt: Date.now() });
+        await db.ref(`players/${roomCode}/${myId}`).set({ name: name, cardCount: 0 });
+        currentRoom = roomCode;
+        playerId = myId;
+        playerName = name;
+        // Відкриваємо гру
+        document.getElementById('lobby').style.display = 'none';
+        document.getElementById('gameArea').style.display = 'block';
+        // Чекаємо, поки приєднаються інші – для початку просто показуємо очікування
+        showMessage(`Кімната створена! Код: ${roomCode}. Поділіться ним з друзями.`);
+        // Слухаємо зміни в гравцях, щоб почати гру, коли буде 2+ гравці
+        db.ref(`players/${roomCode}`).on('value', async (snapshot) => {
+            const players = snapshot.val();
+            if (players && Object.keys(players).length >= 2) {
+                // Якщо гри ще немає – починаємо
+                const gameSnap = await db.ref(`game/${roomCode}`).once('value');
+                if (!gameSnap.exists()) {
+                    startGame(roomCode, players);
+                }
+            }
+        });
+        subscribeToGame(roomCode, myId);
+    }
+
+    async function joinRoom(roomCode, name) {
+        const myId = getPlayerId();
+        const roomSnap = await db.ref(`rooms/${roomCode}`).once('value');
+        if (!roomSnap.exists()) {
+            showMessage("Кімнату не знайдено");
+            return;
+        }
+        // Додаємо гравця
+        await db.ref(`players/${roomCode}/${myId}`).set({ name: name, cardCount: 0 });
+        currentRoom = roomCode;
+        playerId = myId;
+        playerName = name;
+        document.getElementById('lobby').style.display = 'none';
+        document.getElementById('gameArea').style.display = 'block';
+        // Перевіряємо, чи вже є гра
+        const gameSnap = await db.ref(`game/${roomCode}`).once('value');
+        if (!gameSnap.exists()) {
+            // Якщо ще немає, чекаємо, поки з'явиться
+            db.ref(`game/${roomCode}`).on('value', (snap) => {
+                if (snap.exists()) subscribeToGame(roomCode, myId);
+            });
+        } else {
+            subscribeToGame(roomCode, myId);
+        }
+    }
+
+    async function startGame(roomCode, players) {
+        const deck = createDeck();
+        const playerIds = Object.keys(players);
+        let hands = {};
+        for (let pid of playerIds) {
+            hands[pid] = [];
+            for (let i=0; i<5; i++) hands[pid].push(deck.pop());
+        }
+        let tableCard = deck.pop();
+        while (tableCard.type === 'wild') {
+            deck.push(tableCard);
+            shuffle(deck);
+            tableCard = deck.pop();
+        }
+        await db.ref(`cards/${roomCode}`).set(hands);
+        await db.ref(`game/${roomCode}`).set({
+            deck: deck,
+            tableCard: tableCard,
+            players: players,
+            currentPlayer: playerIds[0],
+            direction: 1,
+            drawStack: 0
+        });
+    }
+
+    // ---------- Обробники кнопок ----------
+    document.getElementById('createRoom').onclick = () => {
+        const name = document.getElementById('playerName').value.trim() || "Гравець";
+        createRoom(name);
+    };
+    document.getElementById('joinRoom').onclick = () => {
+        const name = document.getElementById('playerName').value.trim() || "Гравець";
+        const room = document.getElementById('roomCode').value.trim().toUpperCase();
+        if (!room) { alert("Введіть код кімнати"); return; }
+        joinRoom(room, name);
+    };
+    document.getElementById('drawBtn').onclick = () => {
+        if (currentRoom) drawCardAction();
+    };
+    document.getElementById('resetBtn').onclick = () => {
+        if (confirm("Почати нову гру?")) resetGame();
+    };
 </script>
 </body>
 </html>
