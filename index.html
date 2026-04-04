@@ -4,519 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>УНО 🇺🇦</title>
-<script src="https://telegram.org/js/telegram-web-app.js">
-// ═══════════════════════════════════════════
-// ── TIMER SYSTEM ──
-// ═══════════════════════════════════════════
-let timerInt=null, timerSec=30;
-const TURN_TIME=30;
-
-function startTurnTimer(g,isMe){
-  clearInterval(timerInt);
-  const elapsed=Math.floor((Date.now()-(g.turnStartTime||Date.now()))/1000);
-  timerSec=Math.max(0,TURN_TIME-elapsed);
-  updateTimerBar(timerSec);
-  timerInt=setInterval(async()=>{
-    timerSec=Math.max(0,timerSec-1);
-    updateTimerBar(timerSec);
-    if(timerSec<=0){
-      clearInterval(timerInt);
-      if(isMe) await drawCard(); // auto-draw on timeout
-    }
-  },1000);
-}
-
-function updateTimerBar(sec){
-  const fill=document.getElementById('timerFill');
-  if(!fill) return;
-  const pct=Math.max(0,sec/TURN_TIME*100);
-  fill.style.width=pct+'%';
-  fill.className='gtimer-fill'+(sec<=5?' crit':sec<=10?' warn':'');
-}
-
-// ═══════════════════════════════════════════
-// ── STACK RULE (+2 stacking) ──
-// ═══════════════════════════════════════════
-// When pendingStack>0, next player MUST play +2 or take all
-let pendingStack=0;
-
-function canPlayWithStack(card,top,stack){
-  if(stack>0) return card.value==='+2'||card.value==='wild+4';
-  return canPlay(card,top);
-}
-
-// ═══════════════════════════════════════════
-// ── 7-0 RULE ──
-// ═══════════════════════════════════════════
-let rule70=false; // can be toggled in room settings
-
-async function apply70Rule(card,g){
-  if(!rule70) return false;
-  const players=g.turnOrder;
-  const myIdx=players.indexOf(ME.id);
-  if(card.value==='7'){
-    // Swap hands with chosen opponent - for now auto pick next
-    const nextPid=players[(myIdx+1)%players.length];
-    const myH=[...getHand(g.players[ME.id])];
-    const theirH=[...getHand(g.players[nextPid])];
-    const upd={};
-    upd[`players/${ME.id}/hand`]=theirH.length?theirH:'none';
-    upd[`players/${nextPid}/hand`]=myH.length?myH:'none';
-    await update(ref(db,`unoRooms/${roomId}`),upd);
-    toast(`🔄 Обмінявся рукою з ${g.players[nextPid]?.name}!`);
-    return true;
-  }
-  if(card.value==='0'){
-    // Rotate all hands in direction
-    const upd={};
-    const hands=players.map(pid=>getHand(g.players[pid]));
-    if(g.direction===1){
-      players.forEach((pid,i)=>{ const prev=hands[(i-1+players.length)%players.length]; upd[`players/${pid}/hand`]=prev.length?prev:'none'; });
-    } else {
-      players.forEach((pid,i)=>{ const next=hands[(i+1)%players.length]; upd[`players/${pid}/hand`]=next.length?next:'none'; });
-    }
-    await update(ref(db,`unoRooms/${roomId}`),upd);
-    toast('🌀 Руки передано по колу!');
-    return true;
-  }
-  return false;
-}
-
-// ═══════════════════════════════════════════
-// ── CARD FLY ANIMATION ──
-// ═══════════════════════════════════════════
-function animateOpponentCard(card){
-  const topEl=document.getElementById('topCard');
-  if(!topEl) return;
-  const rect=topEl.getBoundingClientRect();
-  const div=document.createElement('div');
-  div.className='card-fly uc '+cc(card);
-  div.style.cssText=`left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;height:${rect.height}px`;
-  div.innerHTML=`<div class="cv${cl(card).length>2?' sm':''}">${cl(card)}</div>`;
-  document.body.appendChild(div);
-  setTimeout(()=>div.remove(),700);
-}
-
-// ═══════════════════════════════════════════
-// ── CONFETTI ──
-// ═══════════════════════════════════════════
-function launchConfetti(){
-  const colors=['#f5c842','#e8445a','#34d870','#4fa3ff','#a855f7','#ff6b6b','#ffd93d'];
-  for(let i=0;i<60;i++){
-    setTimeout(()=>{
-      const div=document.createElement('div');
-      div.className='confetti-piece';
-      div.style.cssText=`left:${Math.random()*100}vw;top:-10px;background:${colors[Math.floor(Math.random()*colors.length)]};animation-duration:${1.5+Math.random()*2}s;animation-delay:${Math.random()*.5}s;transform:rotate(${Math.random()*360}deg)`;
-      document.body.appendChild(div);
-      setTimeout(()=>div.remove(),3500);
-    },i*30);
-  }
-}
-
-// ═══════════════════════════════════════════
-// ── VOICE REACTIONS ──
-// ═══════════════════════════════════════════
-const VOICE_REACTS=[
-  {id:'uno',emoji:'📢',name:'УНО!',sound:[523,659,784]},
-  {id:'noice',emoji:'🔥',name:'Красаво!',sound:[440,554,659]},
-  {id:'unfair',emoji:'😤',name:'Не чесно!',sound:[220,196,185]},
-  {id:'laugh',emoji:'🤣',name:'Хаха',sound:[880,660,440]},
-  {id:'gg',emoji:'🏆',name:'GG!',sound:[523,587,659,698,784]},
-  {id:'think',emoji:'🤔',name:'Хм...',sound:[330,294]},
-  {id:'rush',emoji:'⚡',name:'Швидше!',sound:[880,1100]},
-  {id:'ukraine',emoji:'🇺🇦',name:'Слава!',sound:[659,784,988]},
-];
-
-function renderVreactGrid(){
-  const g=document.getElementById('vreactGrid');
-  if(!g) return;
-  g.innerHTML='';
-  VOICE_REACTS.forEach(r=>{
-    const div=document.createElement('div'); div.className='vrbt';
-    div.innerHTML=`<div class="vrico">${r.emoji}</div><div class="vrnm">${r.name}</div>`;
-    div.onclick=()=>{ playVoiceReact(r); document.getElementById('vreactOv').classList.remove('on'); };
-    g.appendChild(div);
-  });
-}
-
-async function playVoiceReact(r){
-  // Play sound
-  if(r.sound) r.sound.forEach((f,i)=>setTimeout(()=>beep(f,.12,'sine',.2),i*100));
-  // Send to chat
-  if(roomId) await set(push(ref(db,`unoChat/${roomId}`)),{uid:ME.id,name:ME.name,initials:ME.initials||'?',photo:(ME.photo&&typeof ME.photo==='string'?ME.photo:null),color:gameRoom?.players?.[ME.id]?.color||'#2e3358',text:r.emoji+' '+r.name,ts:Date.now(),isReact:true});
-  // Float animation
-  const el=document.createElement('div'); el.className='freact'; el.textContent=r.emoji;
-  el.style.cssText=`left:${15+Math.random()*70}%;bottom:220px`; document.body.appendChild(el);
-  setTimeout(()=>el.remove(),1700);
-}
-
-window.openVreact=()=>{ renderVreactGrid(); document.getElementById('vreactOv').classList.add('on'); };
-
-// ═══════════════════════════════════════════
-// ── CLAN CHAT ──
-// ═══════════════════════════════════════════
-let clanChatSub=null;
-
-window.openClanChat=()=>{
-  if(!prf.clanId){ toast('Ти не в клані!'); return; }
-  document.getElementById('clanChatOv').classList.add('on');
-  startClanChatSub();
-};
-window.closeClanChat=()=>{ document.getElementById('clanChatOv').classList.remove('on'); };
-
-function startClanChatSub(){
-  if(clanChatSub||!prf.clanId) return;
-  clanChatSub=onValue(ref(db,`unoClans/${prf.clanId}/chat`),snap=>{
-    const d=snap.val()||{};
-    const msgs=Object.values(d).sort((a,b)=>a.ts-b.ts);
-    const el=document.getElementById('clanChatMsgs'); el.innerHTML='';
-    msgs.slice(-50).forEach(m=>{
-      const me=m.uid===ME.id;
-      const div=document.createElement('div'); div.className='cmsg'+(me?' me':'');
-      const av=m.photo?`<img src="${m.photo}">`:(m.initials||'?');
-      div.innerHTML=`<div class="mav" style="background:${m.color||'#2e3358'}">${av}</div><div><div class="csndr">${me?'Ти':m.name}</div><div class="cbubble">${esc(m.text)}</div></div>`;
-      el.appendChild(div);
-    });
-    el.scrollTop=el.scrollHeight;
-  });
-}
-
-window.sendClanMsg=async()=>{
-  if(!prf.clanId) return;
-  const inp=document.getElementById('clanChatInp'); const t=inp.value.trim(); if(!t) return; inp.value='';
-  await set(push(ref(db,`unoClans/${prf.clanId}/chat`)),{uid:ME.id,name:ME.name,initials:ME.initials||'?',photo:(ME.photo&&typeof ME.photo==='string'?ME.photo:null),color:myColor(),text:t,ts:Date.now()});
-};
-
-// ═══════════════════════════════════════════
-// ── TOURNAMENTS ──
-// ═══════════════════════════════════════════
-const TOURNAMENTS=[
-  {id:'weekly',name:'Тижневий чемпіонат',status:'live',prize:5000,entry:100,players:47,maxPlayers:64},
-  {id:'daily',name:'Щоденний кубок',status:'open',prize:1000,entry:50,players:12,maxPlayers:32},
-  {id:'noob',name:'Кубок новачків',status:'open',prize:500,entry:0,players:8,maxPlayers:16},
-  {id:'clan',name:'Кланова ліга',status:'soon',prize:10000,entry:200,players:0,maxPlayers:128},
-];
-
-function renderTournaments(){
-  const el=document.getElementById('tournSection'); if(!el) return;
-  el.innerHTML='';
-  TOURNAMENTS.forEach(t=>{
-    const div=document.createElement('div'); div.className='tourn-card'+(t.status==='live'?' live':'');
-    const badge=t.status==='live'?`<span class="tourn-badge live">🔴 LIVE</span>`:t.status==='open'?`<span class="tourn-badge open">Відкритий</span>`:`<span class="tourn-badge soon">Скоро</span>`;
-    const canJoin=t.status!=='soon'&&t.players<t.maxPlayers;
-    div.innerHTML=`<div class="tourn-hdr"><div class="tourn-nm">${t.name}</div>${badge}</div>
-      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">👥 ${t.players}/${t.maxPlayers} гравців · Вхід: ${t.entry?'🪙'+t.entry:'Безкоштовно'}</div>
-      <div class="prize-row">
-        <div class="prize-box"><div class="prize-val">🥇🪙${t.prize}</div><div class="prize-lbl">1 місце</div></div>
-        <div class="prize-box"><div class="prize-val">🥈🪙${Math.floor(t.prize*.5)}</div><div class="prize-lbl">2 місце</div></div>
-        <div class="prize-box"><div class="prize-val">🥉🪙${Math.floor(t.prize*.25)}</div><div class="prize-lbl">3 місце</div></div>
-      </div>
-      ${canJoin?`<button class="btn bg" style="margin-top:10px" onclick="joinTournament('${t.id}',${t.entry},'${t.name}')">⚔️ Вступити</button>`:''}`;
-    el.appendChild(div);
-  });
-}
-
-window.joinTournament=async(id,entry,name)=>{
-  if(prf.coins<entry) return toast(`❌ Потрібно 🪙${entry}`);
-  if(entry>0){ prf.coins-=entry; savePrf(); updateCoinDisplays(); }
-  try{
-    await update(ref(db,`unoTournaments/${id}/players/${ME.id}`),{name:ME.name,initials:ME.initials||'?',wins:0,at:Date.now()});
-    toast(`✅ Вступив у "${name}"!`);
-    questProgress('invite_week',0); // track
-  }catch(e){ toast('❌ '+e.message); }
-};
-
-// ═══════════════════════════════════════════
-// ── BETS ──
-// ═══════════════════════════════════════════
-let currentBet=0;
-
-window.openBet=()=>{
-  if(!isHost) return toast('Тільки хост може призначити ставку');
-  document.getElementById('betModal').classList.add('on');
-};
-window.setBet=v=>{ document.getElementById('betSlider').value=v; document.getElementById('betAmount').textContent=v; };
-window.confirmBet=async()=>{
-  const amt=parseInt(document.getElementById('betAmount').textContent)||100;
-  if(prf.coins<amt) return toast('❌ Не вистачає монет!');
-  currentBet=amt;
-  document.getElementById('betModal').classList.remove('on');
-  if(roomId) await update(ref(db,`unoRooms/${roomId}`),{bet:amt});
-  toast(`💰 Ставка 🪙${amt} встановлена!`);
-};
-
-function applyBetReward(isWinner){
-  if(!currentBet) return 0;
-  if(isWinner){
-    // Winner gets bet * number of players
-    const playerCount=gameRoom?Object.keys(gameRoom.players||{}).length:2;
-    const reward=currentBet*(playerCount-1);
-    addCoins(reward,'ставка — перемога!');
-    return reward;
-  } else {
-    prf.coins=Math.max(0,prf.coins-currentBet);
-    savePrf(); updateCoinDisplays();
-    toast(`💸 -🪙${currentBet} ставка програна`);
-    return -currentBet;
-  }
-}
-
-// ═══════════════════════════════════════════
-// ── VIP SYSTEM ──
-// ═══════════════════════════════════════════
-function isVIP(){ return prf.vip&&prf.vip>Date.now(); }
-function vipMultiplier(){ return isVIP()?2:1; }
-
-window.buyVIP=()=>{
-  const price=2000;
-  if(prf.coins<price) return toast(`❌ Потрібно 🪙${price} для VIP`);
-  prf.coins-=price;
-  prf.vip=Date.now()+(30*24*60*60*1000); // 30 days
-  savePrf(); updateCoinDisplays();
-  toast('👑 VIP активовано на 30 днів!');
-  renderProfile();
-};
-
-// ═══════════════════════════════════════════
-// ── ANALYTICS ──
-// ═══════════════════════════════════════════
-function renderAnalytics(){
-  const el=document.getElementById('analyticsSection'); if(!el) return;
-
-  // Win rate by week (last 8 weeks simulated from history)
-  const weekData=[];
-  for(let i=7;i>=0;i--){
-    const label=i===0?'Цей':`-${i}т`;
-    // Use actual history if available
-    const wins=Math.max(0,Math.round(Math.random()*prf.wins*.3));
-    const games=wins+Math.round(Math.random()*3);
-    weekData.push({label,wins,games});
-  }
-  if(prf.wins>0) weekData[7]={label:'Цей',wins:prf.wins,games:prf.games};
-
-  const maxGames=Math.max(...weekData.map(w=>w.games),1);
-
-  // Favorite cards tracking
-  const favCards=prf.favCards||{};
-  const sorted=Object.entries(favCards).sort((a,b)=>b[1]-a[1]).slice(0,3);
-
-  el.innerHTML=`
-    <div class="stat-graph">
-      <div class="graph-title">📈 Ігри по тижнях</div>
-      <div class="bar-chart">
-        ${weekData.map(w=>`<div class="bar-col">
-          <div class="bar-fill" style="height:${Math.max(4,w.games/maxGames*100)}%"></div>
-          <div class="bar-lbl">${w.label}</div>
-        </div>`).join('')}
-      </div>
-    </div>
-    <div class="stat-graph">
-      <div class="graph-title">🃏 Улюблені карти</div>
-      ${sorted.length?sorted.map(([val,cnt])=>{
-        const colorClass=['red','blue','green','yellow','wild'].find(c=>val.startsWith(c))||'wild';
-        return `<div class="fav-card-row">
-          <div class="fav-card-ico ${colorClass==='red'?'cr':colorClass==='blue'?'cb':colorClass==='green'?'cg':colorClass==='yellow'?'cy':'cw'}">${LBL[val]||val}</div>
-          <div class="fav-card-info"><div class="fav-card-nm">${val}</div><div class="fav-card-ct">${cnt} разів</div></div>
-          <div class="fav-card-pct">${Math.round(cnt/(prf.cards||1)*100)}%</div>
-        </div>`;
-      }).join(''):`<div style="font-size:13px;color:var(--muted);text-align:center;padding:16px">Зіграй більше ігор!</div>`}
-    </div>
-    <div class="stat-graph">
-      <div class="graph-title">📊 Рекорди</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-        <div class="sc"><div class="scv">${prf.maxStreak||0}</div><div class="scl">Макс. серія</div></div>
-        <div class="sc"><div class="scv">${prf.bestScore||0}</div><div class="scl">Кращий раунд</div></div>
-        <div class="sc"><div class="scv">${prf.longestGame||0}</div><div class="scl">Найдовша гра (ходів)</div></div>
-        <div class="sc"><div class="scv">${prf.fastestWin||0}</div><div class="scl">Найшвидша перемога (сек)</div></div>
-      </div>
-    </div>
-    ${!isVIP()?`<button class="btn" style="background:linear-gradient(135deg,#f7c948,#e8a820);color:#0d0f1a;margin-top:4px" onclick="buyVIP()">👑 VIP — 🪙2000 (30 днів)</button>`:`<div style="text-align:center;margin-top:8px"><span class="vip-badge">👑 VIP АКТИВНИЙ</span></div>`}
-  `;
-}
-
-// Track favorite cards
-function trackCardPlayed(card){
-  prf.favCards=prf.favCards||{};
-  const key=card.color+'_'+card.value;
-  prf.favCards[key]=(prf.favCards[key]||0)+1;
-  savePrf();
-}
-
-// Track game length
-let gameStartTime=0, gameTurns=0;
-function trackGameStart(){ gameStartTime=Date.now(); gameTurns=0; }
-function trackTurn(){ gameTurns++; }
-function trackGameEnd(isWin){
-  if(gameStartTime){
-    const secs=Math.floor((Date.now()-gameStartTime)/1000);
-    if(isWin){
-      if(!prf.fastestWin||secs<prf.fastestWin) prf.fastestWin=secs;
-    }
-    if(!prf.longestGame||gameTurns>prf.longestGame) prf.longestGame=gameTurns;
-    savePrf();
-  }
-}
-
-// ═══════════════════════════════════════════
-// ── PATCH: renderGame to add timer + animation ──
-// ═══════════════════════════════════════════
-const _origRenderGame=typeof renderGame==='function'?renderGame:null;
-
-// Override renderGame to add timer
-const _baseRenderGame=window._baseRenderGame||null;
-
-function renderGameFull(g){
-  if(!g?.turnOrder) return;
-  const top=g.discard?.[g.discard.length-1];
-  const myHand=getHand(g.players?.[ME.id]);
-  const curPid=g.turnOrder[g.turnIndex%g.turnOrder.length];
-  const isMe=curPid===ME.id;
-
-  const tc=document.getElementById('topCard'); tc.className=cc(top);
-  document.getElementById('tcV').textContent=cl(top);
-  document.getElementById('tcV').className='cv'+(cl(top).length>2?' sm':'');
-  document.getElementById('tcTL').textContent=cl(top);
-  document.getElementById('tcBR').textContent=cl(top);
-  document.getElementById('gTurnNm').textContent=isMe?'Ти':(g.players?.[curPid]?.name||'-');
-  document.getElementById('myTag').style.display=isMe?'flex':'none';
-  document.getElementById('gDir').textContent=g.direction===1?'↻':'↺';
-  document.getElementById('gDeck').textContent=(g.deck||[]).length;
-  document.getElementById('gRd').textContent=`Раунд ${g.currentRound||1}/${g.maxRounds||1}`;
-
-  const strip=document.getElementById('opstrip'); strip.innerHTML='';
-  g.turnOrder.forEach(pid=>{
-    if(pid===ME.id) return;
-    const p=g.players?.[pid]; if(!p) return;
-    const div=document.createElement('div'); div.className='opch'+(pid===curPid?' cur':'');
-    const av=p.photo?`<img src="${p.photo}">`:(p.initials||'?');
-    div.innerHTML=`<div class="opav" style="background:${p.color}">${av}<div class="opcnt">${getHand(p).length}</div></div><div class="opnm">${p.name}</div><div class="oppt">${g.scores?.[pid]||0}pt</div>`;
-    strip.appendChild(div);
-  });
-
-  document.getElementById('myCount').textContent=myHand.length;
-  renderHand(myHand,top,isMe);
-  document.getElementById('drawCard').className='uc cbk dcard'+(isMe?'':' dim');
-  document.getElementById('fabUno').classList.toggle('on',isMe&&myHand.length===2);
-  renderBoostsBar(isMe);
-
-  // Show/hide new FABs
-  const fv=document.getElementById('fabVreact');
-  if(fv) fv.style.display='flex';
-  if(prf.clanId){ const fc=document.getElementById('fabClanChat'); if(fc) fc.classList.add('on'); }
-
-  // Stack indicator
-  if(g.pendingStack>0) toast(`⚠️ Стек: наступний бере +${g.pendingStack}! Грай +2 або бери`);
-
-  // Start timer
-  startTurnTimer(g,isMe);
-  trackTurn();
-}
-
-// ═══════════════════════════════════════════
-// ── PATCH renderProfile to add VIP + analytics ──
-// ═══════════════════════════════════════════
-const _origRenderProfile=window.renderProfile;
-// renderProfile already defined - we'll call renderAnalytics inside
-
-// ═══════════════════════════════════════════
-// ── PATCH: Hook into existing renderGame ──
-// ═══════════════════════════════════════════
-// We replace the existing renderGame reference
-window._renderGame=renderGameFull;
-
-// ═══════════════════════════════════════════
-// ── PATCH: Hook into execPlay for tracking ──
-// ═══════════════════════════════════════════
-const _origExecPlay=window.execPlay;
-
-// ═══════════════════════════════════════════
-// ── MATCH HISTORY (H2H stats) ──
-// ═══════════════════════════════════════════
-function recordMatch(opponentId,opponentName,result){
-  prf.matches=prf.matches||{};
-  if(!prf.matches[opponentId]) prf.matches[opponentId]={name:opponentName,wins:0,losses:0};
-  if(result==='win') prf.matches[opponentId].wins++;
-  else prf.matches[opponentId].losses++;
-  savePrf();
-}
-
-// ═══════════════════════════════════════════
-// ── PATCH: showGameOver for confetti, bets, tracking ──
-// ═══════════════════════════════════════════
-// Extra logic runs after existing showGameOver via Firebase watch
-// We track wins/bets/confetti via a separate hook
-function onGameOver(g){
-  const win=g.winnerId===ME.id;
-  if(win) setTimeout(launchConfetti, 300);
-  trackGameEnd(win);
-  if(currentBet) applyBetReward(win);
-  if(g.turnOrder) g.turnOrder.forEach(pid=>{ if(pid!==ME.id&&g.players?.[pid]) recordMatch(pid,g.players[pid].name,win?'win':'loss'); });
-  const myScore=g.scores?.[ME.id]||0;
-  if(myScore>=(prf.bestScore||0)){ prf.bestScore=myScore; savePrf(); }
-  currentBet=0;
-}
-// Hook: called from the roomSub when status==='done'
-window._onGameOverExtra=onGameOver;
-
-// ═══════════════════════════════════════════
-// ── PATCH: startGame to track start + show bet ──
-// ═══════════════════════════════════════════
-// trackGameStart is called from startGame - inject via roomSub
-// We just ensure trackGameStart runs when game starts by watching status
-const _gameStartObs=setInterval(()=>{
-  if(gameRoom&&gameRoom.status==='playing'&&!gameStartTime){
-    gameStartTime=Date.now();
-    if(gameRoom.bet) currentBet=gameRoom.bet;
-  }
-},1000);
-
-// ═══════════════════════════════════════════
-// ── PATCH: renderWait to show bet button for host ──
-// ═══════════════════════════════════════════
-// renderWait bet button - patched via MutationObserver on startBtn
-const betBtnObs=new MutationObserver(()=>{
-  const startBtn=document.getElementById('startBtn');
-  const betBtn=document.getElementById('betBtn');
-  if(startBtn&&betBtn) betBtn.style.display=startBtn.style.display;
-});
-const _sbEl=document.getElementById('startBtn');
-if(_sbEl) betBtnObs.observe(_sbEl,{attributes:true,attributeFilter:['style']});
-
-// ═══════════════════════════════════════════
-// ── PATCH: renderProfile to add analytics ──  
-// ═══════════════════════════════════════════
-// Analytics rendered separately, called from goNav
-// renderProfile already calls renderAnalytics if we patch the goNav
-const _goNavBase=window.goNav;
-window.goNav=function(tab){
-  _goNavBase(tab);
-  if(tab==='profile') setTimeout(renderAnalytics,100);
-  if(tab==='social') setTimeout(renderTournaments,100);
-};
-
-// ═══════════════════════════════════════════
-// ── PATCH: renderSocial to include tournaments ──
-// ═══════════════════════════════════════════
-// renderSocial tournaments hooked via goNav patch above
-
-
-// ═══════════════════════════════════════════
-// ── VIP COIN MULTIPLIER in addCoins ──
-// ═══════════════════════════════════════════
-// VIP multiplier applied inline in addCoins
-const _vipAddCoins=window.addCoins;
-window.addCoinsVIP=function(n,reason){
-  const mult=vipMultiplier();
-  const actual=mult>1?Math.floor(n*mult):n;
-  prf.coins+=actual; savePrf(); updateCoinDisplays();
-  if(reason&&mult>1) toast(`+🪙${actual} ${reason} (×2 VIP!)`);
-  else if(reason) toast(`+🪙${actual} ${reason}`);
-};
-
-// init new features
-renderVreactGrid();
-
-</script>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Nunito:wght@400;600;700;800;900&display=swap');
 :root{
@@ -890,6 +378,13 @@ body::before{content:'';position:fixed;inset:0;z-index:0;opacity:.035;background
 .lbsub{font-size:10px;color:var(--muted)}
 .lbsc{font-family:'Bebas Neue',sans-serif;font-size:17px;color:var(--gold)}
 
+/* LEAVE CONFIRM */
+.confirm-ov{display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:450;align-items:center;justify-content:center}
+.confirm-ov.on{display:flex}
+.confirm-card{background:var(--s1);border-radius:20px;padding:24px 20px;text-align:center;max-width:300px;width:90%;animation:pop .2s ease}
+.confirm-card h3{font-family:"Bebas Neue",sans-serif;font-size:20px;letter-spacing:1px;margin-bottom:8px}
+.confirm-card p{font-size:13px;color:var(--muted);margin-bottom:20px;line-height:1.5}
+
 /* TOAST */
 .toast{position:fixed;bottom:82px;left:50%;transform:translateX(-50%);background:var(--s2);color:var(--text);padding:9px 18px;border-radius:28px;font-size:13px;font-weight:700;box-shadow:0 8px 28px rgba(0,0,0,.5);z-index:350;opacity:0;pointer-events:none;transition:opacity .3s;white-space:nowrap;border:1px solid var(--s3);max-width:92vw;text-align:center}
 .toast.on{opacity:1}
@@ -1182,6 +677,7 @@ body.th-cosmos{--bg:#03030e;--s1:#06061a;--s2:#0a0a26;--s3:#0e0e30;--s4:#12123a;
 <!-- ══════════ GAME ══════════ -->
 <div class="scr" id="s-game">
   <div class="gtop">
+    <button onclick="confirmLeaveGame()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;padding:4px 6px;border-radius:8px;line-height:1" title="Вийти">✕</button>
     <div class="gturn">Хід: <b id="gTurnNm">-</b></div>
     <div class="ginfo"><span class="gdir" id="gDir">↻</span><span class="grd" id="gRd">Раунд 1</span></div>
     <div class="gdeck">🃏 <span id="gDeck">108</span></div>
@@ -2263,6 +1759,537 @@ setTimeout(()=>{
   checkBonus();
   syncFB();
 },1200);
+
+// ═══════════════════════════════════════════
+// ── TIMER SYSTEM ──
+// ═══════════════════════════════════════════
+timerInt=null, timerSec=30;
+const TURN_TIME=30;
+
+function startTurnTimer(g,isMe){
+  clearInterval(timerInt);
+  const elapsed=Math.floor((Date.now()-(g.turnStartTime||Date.now()))/1000);
+  timerSec=Math.max(0,TURN_TIME-elapsed);
+  updateTimerBar(timerSec);
+  timerInt=setInterval(async()=>{
+    timerSec=Math.max(0,timerSec-1);
+    updateTimerBar(timerSec);
+    if(timerSec<=0){
+      clearInterval(timerInt);
+      if(isMe) await drawCard(); // auto-draw on timeout
+    }
+  },1000);
+}
+
+function updateTimerBar(sec){
+  const fill=document.getElementById('timerFill');
+  if(!fill) return;
+  const pct=Math.max(0,sec/TURN_TIME*100);
+  fill.style.width=pct+'%';
+  fill.className='gtimer-fill'+(sec<=5?' crit':sec<=10?' warn':'');
+}
+
+// ═══════════════════════════════════════════
+// ── STACK RULE (+2 stacking) ──
+// ═══════════════════════════════════════════
+// When pendingStack>0, next player MUST play +2 or take all
+pendingStack=0;
+
+function canPlayWithStack(card,top,stack){
+  if(stack>0) return card.value==='+2'||card.value==='wild+4';
+  return canPlay(card,top);
+}
+
+// ═══════════════════════════════════════════
+// ── 7-0 RULE ──
+// ═══════════════════════════════════════════
+rule70=false; // can be toggled in room settings
+
+async function apply70Rule(card,g){
+  if(!rule70) return false;
+  const players=g.turnOrder;
+  const myIdx=players.indexOf(ME.id);
+  if(card.value==='7'){
+    // Swap hands with chosen opponent - for now auto pick next
+    const nextPid=players[(myIdx+1)%players.length];
+    const myH=[...getHand(g.players[ME.id])];
+    const theirH=[...getHand(g.players[nextPid])];
+    const upd={};
+    upd[`players/${ME.id}/hand`]=theirH.length?theirH:'none';
+    upd[`players/${nextPid}/hand`]=myH.length?myH:'none';
+    await update(ref(db,`unoRooms/${roomId}`),upd);
+    toast(`🔄 Обмінявся рукою з ${g.players[nextPid]?.name}!`);
+    return true;
+  }
+  if(card.value==='0'){
+    // Rotate all hands in direction
+    const upd={};
+    const hands=players.map(pid=>getHand(g.players[pid]));
+    if(g.direction===1){
+      players.forEach((pid,i)=>{ const prev=hands[(i-1+players.length)%players.length]; upd[`players/${pid}/hand`]=prev.length?prev:'none'; });
+    } else {
+      players.forEach((pid,i)=>{ const next=hands[(i+1)%players.length]; upd[`players/${pid}/hand`]=next.length?next:'none'; });
+    }
+    await update(ref(db,`unoRooms/${roomId}`),upd);
+    toast('🌀 Руки передано по колу!');
+    return true;
+  }
+  return false;
+}
+
+// ═══════════════════════════════════════════
+// ── CARD FLY ANIMATION ──
+// ═══════════════════════════════════════════
+function animateOpponentCard(card){
+  const topEl=document.getElementById('topCard');
+  if(!topEl) return;
+  const rect=topEl.getBoundingClientRect();
+  const div=document.createElement('div');
+  div.className='card-fly uc '+cc(card);
+  div.style.cssText=`left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;height:${rect.height}px`;
+  div.innerHTML=`<div class="cv${cl(card).length>2?' sm':''}">${cl(card)}</div>`;
+  document.body.appendChild(div);
+  setTimeout(()=>div.remove(),700);
+}
+
+// ═══════════════════════════════════════════
+// ── CONFETTI ──
+// ═══════════════════════════════════════════
+function launchConfetti(){
+  const colors=['#f5c842','#e8445a','#34d870','#4fa3ff','#a855f7','#ff6b6b','#ffd93d'];
+  for(let i=0;i<60;i++){
+    setTimeout(()=>{
+      const div=document.createElement('div');
+      div.className='confetti-piece';
+      div.style.cssText=`left:${Math.random()*100}vw;top:-10px;background:${colors[Math.floor(Math.random()*colors.length)]};animation-duration:${1.5+Math.random()*2}s;animation-delay:${Math.random()*.5}s;transform:rotate(${Math.random()*360}deg)`;
+      document.body.appendChild(div);
+      setTimeout(()=>div.remove(),3500);
+    },i*30);
+  }
+}
+
+// ═══════════════════════════════════════════
+// ── VOICE REACTIONS ──
+// ═══════════════════════════════════════════
+const VOICE_REACTS=[
+  {id:'uno',emoji:'📢',name:'УНО!',sound:[523,659,784]},
+  {id:'noice',emoji:'🔥',name:'Красаво!',sound:[440,554,659]},
+  {id:'unfair',emoji:'😤',name:'Не чесно!',sound:[220,196,185]},
+  {id:'laugh',emoji:'🤣',name:'Хаха',sound:[880,660,440]},
+  {id:'gg',emoji:'🏆',name:'GG!',sound:[523,587,659,698,784]},
+  {id:'think',emoji:'🤔',name:'Хм...',sound:[330,294]},
+  {id:'rush',emoji:'⚡',name:'Швидше!',sound:[880,1100]},
+  {id:'ukraine',emoji:'🇺🇦',name:'Слава!',sound:[659,784,988]},
+];
+
+function renderVreactGrid(){
+  const g=document.getElementById('vreactGrid');
+  if(!g) return;
+  g.innerHTML='';
+  VOICE_REACTS.forEach(r=>{
+    const div=document.createElement('div'); div.className='vrbt';
+    div.innerHTML=`<div class="vrico">${r.emoji}</div><div class="vrnm">${r.name}</div>`;
+    div.onclick=()=>{ playVoiceReact(r); document.getElementById('vreactOv').classList.remove('on'); };
+    g.appendChild(div);
+  });
+}
+
+async function playVoiceReact(r){
+  // Play sound
+  if(r.sound) r.sound.forEach((f,i)=>setTimeout(()=>beep(f,.12,'sine',.2),i*100));
+  // Send to chat
+  if(roomId) await set(push(ref(db,`unoChat/${roomId}`)),{uid:ME.id,name:ME.name,initials:ME.initials||'?',photo:(ME.photo&&typeof ME.photo==='string'?ME.photo:null),color:gameRoom?.players?.[ME.id]?.color||'#2e3358',text:r.emoji+' '+r.name,ts:Date.now(),isReact:true});
+  // Float animation
+  const el=document.createElement('div'); el.className='freact'; el.textContent=r.emoji;
+  el.style.cssText=`left:${15+Math.random()*70}%;bottom:220px`; document.body.appendChild(el);
+  setTimeout(()=>el.remove(),1700);
+}
+
+window.openVreact=()=>{ renderVreactGrid(); document.getElementById('vreactOv').classList.add('on'); };
+
+// ═══════════════════════════════════════════
+// ── CLAN CHAT ──
+// ═══════════════════════════════════════════
+clanChatSub=null;
+
+window.openClanChat=()=>{
+  if(!prf.clanId){ toast('Ти не в клані!'); return; }
+  document.getElementById('clanChatOv').classList.add('on');
+  startClanChatSub();
+};
+window.closeClanChat=()=>{ document.getElementById('clanChatOv').classList.remove('on'); };
+
+function startClanChatSub(){
+  if(clanChatSub||!prf.clanId) return;
+  clanChatSub=onValue(ref(db,`unoClans/${prf.clanId}/chat`),snap=>{
+    const d=snap.val()||{};
+    const msgs=Object.values(d).sort((a,b)=>a.ts-b.ts);
+    const el=document.getElementById('clanChatMsgs'); el.innerHTML='';
+    msgs.slice(-50).forEach(m=>{
+      const me=m.uid===ME.id;
+      const div=document.createElement('div'); div.className='cmsg'+(me?' me':'');
+      const av=m.photo?`<img src="${m.photo}">`:(m.initials||'?');
+      div.innerHTML=`<div class="mav" style="background:${m.color||'#2e3358'}">${av}</div><div><div class="csndr">${me?'Ти':m.name}</div><div class="cbubble">${esc(m.text)}</div></div>`;
+      el.appendChild(div);
+    });
+    el.scrollTop=el.scrollHeight;
+  });
+}
+
+window.sendClanMsg=async()=>{
+  if(!prf.clanId) return;
+  const inp=document.getElementById('clanChatInp'); const t=inp.value.trim(); if(!t) return; inp.value='';
+  await set(push(ref(db,`unoClans/${prf.clanId}/chat`)),{uid:ME.id,name:ME.name,initials:ME.initials||'?',photo:(ME.photo&&typeof ME.photo==='string'?ME.photo:null),color:myColor(),text:t,ts:Date.now()});
+};
+
+// ═══════════════════════════════════════════
+// ── TOURNAMENTS ──
+// ═══════════════════════════════════════════
+const TOURNAMENTS=[
+  {id:'weekly',name:'Тижневий чемпіонат',status:'live',prize:5000,entry:100,players:47,maxPlayers:64},
+  {id:'daily',name:'Щоденний кубок',status:'open',prize:1000,entry:50,players:12,maxPlayers:32},
+  {id:'noob',name:'Кубок новачків',status:'open',prize:500,entry:0,players:8,maxPlayers:16},
+  {id:'clan',name:'Кланова ліга',status:'soon',prize:10000,entry:200,players:0,maxPlayers:128},
+];
+
+function renderTournaments(){
+  const el=document.getElementById('tournSection'); if(!el) return;
+  el.innerHTML='';
+  TOURNAMENTS.forEach(t=>{
+    const div=document.createElement('div'); div.className='tourn-card'+(t.status==='live'?' live':'');
+    const badge=t.status==='live'?`<span class="tourn-badge live">🔴 LIVE</span>`:t.status==='open'?`<span class="tourn-badge open">Відкритий</span>`:`<span class="tourn-badge soon">Скоро</span>`;
+    const canJoin=t.status!=='soon'&&t.players<t.maxPlayers;
+    div.innerHTML=`<div class="tourn-hdr"><div class="tourn-nm">${t.name}</div>${badge}</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">👥 ${t.players}/${t.maxPlayers} гравців · Вхід: ${t.entry?'🪙'+t.entry:'Безкоштовно'}</div>
+      <div class="prize-row">
+        <div class="prize-box"><div class="prize-val">🥇🪙${t.prize}</div><div class="prize-lbl">1 місце</div></div>
+        <div class="prize-box"><div class="prize-val">🥈🪙${Math.floor(t.prize*.5)}</div><div class="prize-lbl">2 місце</div></div>
+        <div class="prize-box"><div class="prize-val">🥉🪙${Math.floor(t.prize*.25)}</div><div class="prize-lbl">3 місце</div></div>
+      </div>
+      ${canJoin?`<button class="btn bg" style="margin-top:10px" onclick="joinTournament('${t.id}',${t.entry},'${t.name}')">⚔️ Вступити</button>`:''}`;
+    el.appendChild(div);
+  });
+}
+
+window.joinTournament=async(id,entry,name)=>{
+  if(prf.coins<entry) return toast(`❌ Потрібно 🪙${entry}`);
+  if(entry>0){ prf.coins-=entry; savePrf(); updateCoinDisplays(); }
+  try{
+    await update(ref(db,`unoTournaments/${id}/players/${ME.id}`),{name:ME.name,initials:ME.initials||'?',wins:0,at:Date.now()});
+    toast(`✅ Вступив у "${name}"!`);
+    questProgress('invite_week',0); // track
+  }catch(e){ toast('❌ '+e.message); }
+};
+
+// ═══════════════════════════════════════════
+// ── BETS ──
+// ═══════════════════════════════════════════
+currentBet=0;
+
+window.openBet=()=>{
+  if(!isHost) return toast('Тільки хост може призначити ставку');
+  document.getElementById('betModal').classList.add('on');
+};
+window.setBet=v=>{ document.getElementById('betSlider').value=v; document.getElementById('betAmount').textContent=v; };
+window.confirmBet=async()=>{
+  const amt=parseInt(document.getElementById('betAmount').textContent)||100;
+  if(prf.coins<amt) return toast('❌ Не вистачає монет!');
+  currentBet=amt;
+  document.getElementById('betModal').classList.remove('on');
+  if(roomId) await update(ref(db,`unoRooms/${roomId}`),{bet:amt});
+  toast(`💰 Ставка 🪙${amt} встановлена!`);
+};
+
+function applyBetReward(isWinner){
+  if(!currentBet) return 0;
+  if(isWinner){
+    // Winner gets bet * number of players
+    const playerCount=gameRoom?Object.keys(gameRoom.players||{}).length:2;
+    const reward=currentBet*(playerCount-1);
+    addCoins(reward,'ставка — перемога!');
+    return reward;
+  } else {
+    prf.coins=Math.max(0,prf.coins-currentBet);
+    savePrf(); updateCoinDisplays();
+    toast(`💸 -🪙${currentBet} ставка програна`);
+    return -currentBet;
+  }
+}
+
+// ═══════════════════════════════════════════
+// ── VIP SYSTEM ──
+// ═══════════════════════════════════════════
+function isVIP(){ return prf.vip&&prf.vip>Date.now(); }
+function vipMultiplier(){ return isVIP()?2:1; }
+
+window.buyVIP=()=>{
+  const price=2000;
+  if(prf.coins<price) return toast(`❌ Потрібно 🪙${price} для VIP`);
+  prf.coins-=price;
+  prf.vip=Date.now()+(30*24*60*60*1000); // 30 days
+  savePrf(); updateCoinDisplays();
+  toast('👑 VIP активовано на 30 днів!');
+  renderProfile();
+};
+
+// ═══════════════════════════════════════════
+// ── ANALYTICS ──
+// ═══════════════════════════════════════════
+function renderAnalytics(){
+  const el=document.getElementById('analyticsSection'); if(!el) return;
+
+  // Win rate by week (last 8 weeks simulated from history)
+  const weekData=[];
+  for(let i=7;i>=0;i--){
+    const label=i===0?'Цей':`-${i}т`;
+    // Use actual history if available
+    const wins=Math.max(0,Math.round(Math.random()*prf.wins*.3));
+    const games=wins+Math.round(Math.random()*3);
+    weekData.push({label,wins,games});
+  }
+  if(prf.wins>0) weekData[7]={label:'Цей',wins:prf.wins,games:prf.games};
+
+  const maxGames=Math.max(...weekData.map(w=>w.games),1);
+
+  // Favorite cards tracking
+  const favCards=prf.favCards||{};
+  const sorted=Object.entries(favCards).sort((a,b)=>b[1]-a[1]).slice(0,3);
+
+  el.innerHTML=`
+    <div class="stat-graph">
+      <div class="graph-title">📈 Ігри по тижнях</div>
+      <div class="bar-chart">
+        ${weekData.map(w=>`<div class="bar-col">
+          <div class="bar-fill" style="height:${Math.max(4,w.games/maxGames*100)}%"></div>
+          <div class="bar-lbl">${w.label}</div>
+        </div>`).join('')}
+      </div>
+    </div>
+    <div class="stat-graph">
+      <div class="graph-title">🃏 Улюблені карти</div>
+      ${sorted.length?sorted.map(([val,cnt])=>{
+        const colorClass=['red','blue','green','yellow','wild'].find(c=>val.startsWith(c))||'wild';
+        return `<div class="fav-card-row">
+          <div class="fav-card-ico ${colorClass==='red'?'cr':colorClass==='blue'?'cb':colorClass==='green'?'cg':colorClass==='yellow'?'cy':'cw'}">${LBL[val]||val}</div>
+          <div class="fav-card-info"><div class="fav-card-nm">${val}</div><div class="fav-card-ct">${cnt} разів</div></div>
+          <div class="fav-card-pct">${Math.round(cnt/(prf.cards||1)*100)}%</div>
+        </div>`;
+      }).join(''):`<div style="font-size:13px;color:var(--muted);text-align:center;padding:16px">Зіграй більше ігор!</div>`}
+    </div>
+    <div class="stat-graph">
+      <div class="graph-title">📊 Рекорди</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div class="sc"><div class="scv">${prf.maxStreak||0}</div><div class="scl">Макс. серія</div></div>
+        <div class="sc"><div class="scv">${prf.bestScore||0}</div><div class="scl">Кращий раунд</div></div>
+        <div class="sc"><div class="scv">${prf.longestGame||0}</div><div class="scl">Найдовша гра (ходів)</div></div>
+        <div class="sc"><div class="scv">${prf.fastestWin||0}</div><div class="scl">Найшвидша перемога (сек)</div></div>
+      </div>
+    </div>
+    ${!isVIP()?`<button class="btn" style="background:linear-gradient(135deg,#f7c948,#e8a820);color:#0d0f1a;margin-top:4px" onclick="buyVIP()">👑 VIP — 🪙2000 (30 днів)</button>`:`<div style="text-align:center;margin-top:8px"><span class="vip-badge">👑 VIP АКТИВНИЙ</span></div>`}
+  `;
+}
+
+// Track favorite cards
+function trackCardPlayed(card){
+  prf.favCards=prf.favCards||{};
+  const key=card.color+'_'+card.value;
+  prf.favCards[key]=(prf.favCards[key]||0)+1;
+  savePrf();
+}
+
+// Track game length
+gameStartTime=0, gameTurns=0;
+function trackGameStart(){ gameStartTime=Date.now(); gameTurns=0; }
+function trackTurn(){ gameTurns++; }
+function trackGameEnd(isWin){
+  if(gameStartTime){
+    const secs=Math.floor((Date.now()-gameStartTime)/1000);
+    if(isWin){
+      if(!prf.fastestWin||secs<prf.fastestWin) prf.fastestWin=secs;
+    }
+    if(!prf.longestGame||gameTurns>prf.longestGame) prf.longestGame=gameTurns;
+    savePrf();
+  }
+}
+
+// ═══════════════════════════════════════════
+// ── PATCH: renderGame to add timer + animation ──
+// ═══════════════════════════════════════════
+const _origRenderGame=typeof renderGame==='function'?renderGame:null;
+
+// Override renderGame to add timer
+const _baseRenderGame=window._baseRenderGame||null;
+
+function renderGameFull(g){
+  if(!g?.turnOrder) return;
+  const top=g.discard?.[g.discard.length-1];
+  const myHand=getHand(g.players?.[ME.id]);
+  const curPid=g.turnOrder[g.turnIndex%g.turnOrder.length];
+  const isMe=curPid===ME.id;
+
+  const tc=document.getElementById('topCard'); tc.className=cc(top);
+  document.getElementById('tcV').textContent=cl(top);
+  document.getElementById('tcV').className='cv'+(cl(top).length>2?' sm':'');
+  document.getElementById('tcTL').textContent=cl(top);
+  document.getElementById('tcBR').textContent=cl(top);
+  document.getElementById('gTurnNm').textContent=isMe?'Ти':(g.players?.[curPid]?.name||'-');
+  document.getElementById('myTag').style.display=isMe?'flex':'none';
+  document.getElementById('gDir').textContent=g.direction===1?'↻':'↺';
+  document.getElementById('gDeck').textContent=(g.deck||[]).length;
+  document.getElementById('gRd').textContent=`Раунд ${g.currentRound||1}/${g.maxRounds||1}`;
+
+  const strip=document.getElementById('opstrip'); strip.innerHTML='';
+  g.turnOrder.forEach(pid=>{
+    if(pid===ME.id) return;
+    const p=g.players?.[pid]; if(!p) return;
+    const div=document.createElement('div'); div.className='opch'+(pid===curPid?' cur':'');
+    const av=p.photo?`<img src="${p.photo}">`:(p.initials||'?');
+    div.innerHTML=`<div class="opav" style="background:${p.color}">${av}<div class="opcnt">${getHand(p).length}</div></div><div class="opnm">${p.name}</div><div class="oppt">${g.scores?.[pid]||0}pt</div>`;
+    strip.appendChild(div);
+  });
+
+  document.getElementById('myCount').textContent=myHand.length;
+  renderHand(myHand,top,isMe);
+  document.getElementById('drawCard').className='uc cbk dcard'+(isMe?'':' dim');
+  document.getElementById('fabUno').classList.toggle('on',isMe&&myHand.length===2);
+  renderBoostsBar(isMe);
+
+  // Show/hide new FABs
+  const fv=document.getElementById('fabVreact');
+  if(fv) fv.style.display='flex';
+  if(prf.clanId){ const fc=document.getElementById('fabClanChat'); if(fc) fc.classList.add('on'); }
+
+  // Stack indicator
+  if(g.pendingStack>0) toast(`⚠️ Стек: наступний бере +${g.pendingStack}! Грай +2 або бери`);
+
+  // Start timer
+  startTurnTimer(g,isMe);
+  trackTurn();
+}
+
+// ═══════════════════════════════════════════
+// ── PATCH renderProfile to add VIP + analytics ──
+// ═══════════════════════════════════════════
+const _origRenderProfile=window.renderProfile;
+// renderProfile already defined - we'll call renderAnalytics inside
+
+// ═══════════════════════════════════════════
+// ── PATCH: Hook into existing renderGame ──
+// ═══════════════════════════════════════════
+// We replace the existing renderGame reference
+window._renderGame=renderGameFull;
+
+// ═══════════════════════════════════════════
+// ── PATCH: Hook into execPlay for tracking ──
+// ═══════════════════════════════════════════
+const _origExecPlay=window.execPlay;
+
+// ═══════════════════════════════════════════
+// ── MATCH HISTORY (H2H stats) ──
+// ═══════════════════════════════════════════
+function recordMatch(opponentId,opponentName,result){
+  prf.matches=prf.matches||{};
+  if(!prf.matches[opponentId]) prf.matches[opponentId]={name:opponentName,wins:0,losses:0};
+  if(result==='win') prf.matches[opponentId].wins++;
+  else prf.matches[opponentId].losses++;
+  savePrf();
+}
+
+// ═══════════════════════════════════════════
+// ── PATCH: showGameOver for confetti, bets, tracking ──
+// ═══════════════════════════════════════════
+// Extra logic runs after existing showGameOver via Firebase watch
+// We track wins/bets/confetti via a separate hook
+function onGameOver(g){
+  const win=g.winnerId===ME.id;
+  if(win) setTimeout(launchConfetti, 300);
+  trackGameEnd(win);
+  if(currentBet) applyBetReward(win);
+  if(g.turnOrder) g.turnOrder.forEach(pid=>{ if(pid!==ME.id&&g.players?.[pid]) recordMatch(pid,g.players[pid].name,win?'win':'loss'); });
+  const myScore=g.scores?.[ME.id]||0;
+  if(myScore>=(prf.bestScore||0)){ prf.bestScore=myScore; savePrf(); }
+  currentBet=0;
+}
+// Hook: called from the roomSub when status==='done'
+window._onGameOverExtra=onGameOver;
+
+// ═══════════════════════════════════════════
+// ── PATCH: startGame to track start + show bet ──
+// ═══════════════════════════════════════════
+// trackGameStart is called from startGame - inject via roomSub
+// We just ensure trackGameStart runs when game starts by watching status
+const _gameStartObs=setInterval(()=>{
+  if(gameRoom&&gameRoom.status==='playing'&&!gameStartTime){
+    gameStartTime=Date.now();
+    if(gameRoom.bet) currentBet=gameRoom.bet;
+  }
+},1000);
+
+// ═══════════════════════════════════════════
+// ── PATCH: renderWait to show bet button for host ──
+// ═══════════════════════════════════════════
+// renderWait bet button - patched via MutationObserver on startBtn
+const betBtnObs=new MutationObserver(()=>{
+  const startBtn=document.getElementById('startBtn');
+  const betBtn=document.getElementById('betBtn');
+  if(startBtn&&betBtn) betBtn.style.display=startBtn.style.display;
+});
+const _sbEl=document.getElementById('startBtn');
+if(_sbEl) betBtnObs.observe(_sbEl,{attributes:true,attributeFilter:['style']});
+
+// ═══════════════════════════════════════════
+// ── PATCH: renderProfile to add analytics ──  
+// ═══════════════════════════════════════════
+// Analytics rendered separately, called from goNav
+// renderProfile already calls renderAnalytics if we patch the goNav
+const _goNavBase=window.goNav;
+window.goNav=function(tab){
+  _goNavBase(tab);
+  if(tab==='profile') setTimeout(renderAnalytics,100);
+  if(tab==='social') setTimeout(renderTournaments,100);
+};
+
+// ═══════════════════════════════════════════
+// ── PATCH: renderSocial to include tournaments ──
+// ═══════════════════════════════════════════
+// renderSocial tournaments hooked via goNav patch above
+
+
+// ═══════════════════════════════════════════
+// ── VIP COIN MULTIPLIER in addCoins ──
+// ═══════════════════════════════════════════
+// VIP multiplier applied inline in addCoins
+const _vipAddCoins=window.addCoins;
+window.addCoinsVIP=function(n,reason){
+  const mult=vipMultiplier();
+  const actual=mult>1?Math.floor(n*mult):n;
+  prf.coins+=actual; savePrf(); updateCoinDisplays();
+  if(reason&&mult>1) toast(`+🪙${actual} ${reason} (×2 VIP!)`);
+  else if(reason) toast(`+🪙${actual} ${reason}`);
+};
+
+// ── LEAVE GAME ──
+window.confirmLeaveGame=()=>{
+  document.getElementById('leaveConfirmOv').classList.add('on');
+};
+window.leaveGameConfirmed=()=>{
+  document.getElementById('leaveConfirmOv').classList.remove('on');
+  backLobby();
+};
+
+// init new features
+renderVreactGrid();
 </script>
+<div class="confirm-ov" id="leaveConfirmOv">
+  <div class="confirm-card">
+    <div style="font-size:40px;margin-bottom:10px">🚪</div>
+    <h3>Покинути гру?</h3>
+    <p>Ти вийдеш з активної гри.<br>Твоє місце залишиться вільним.</p>
+    <div style="display:flex;gap:8px">
+      <button class="btn bgh" style="flex:1" onclick="document.getElementById('leaveConfirmOv').classList.remove('on')">Залишитись</button>
+      <button class="btn br" style="flex:1" onclick="leaveGameConfirmed()">Вийти</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>
