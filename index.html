@@ -713,6 +713,11 @@ if(tg?.initDataUnsafe?.user){
   ME.initials=ME.name.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,2);
   ME.photo=u.photo_url||null;
 } else { ME.id='demo_'+Math.random().toString(36).slice(2,7); ME.name='Тест'; ME.initials='ТС'; }
+// Ensure all ME fields are safe strings - NEVER undefined
+ME.id=String(ME.id||('u_'+Date.now()));
+ME.name=String(ME.name||'Гравець');
+ME.initials=String(ME.initials||'?');
+if(ME.photo&&typeof ME.photo!=='string') ME.photo=null;
 
 // ══ PLAYER STATE ══
 let prf = {
@@ -739,9 +744,9 @@ function updateCoinDisplays(){
 // Firebase doesn't accept empty arrays - use {} for empty hands
 // Convert hand from Firebase (may be {} or array) to JS array
 function getHand(player){
-  if(!player||!player.hand) return [];
+  if(!player||!player.hand||player.hand==='none'||player.hand==='empty') return [];
   if(Array.isArray(player.hand)) return player.hand;
-  if(typeof player.hand==='object') return Object.values(player.hand);
+  if(typeof player.hand==='object'&&player.hand!==null) return Object.values(player.hand);
   return [];
 }
 // Removes all undefined values from object before Firebase write
@@ -1161,17 +1166,24 @@ window.findRandom=async()=>{
   const snap=await get(ref(db,'unoRooms'));
   const data=snap.val()||{};
   const open=Object.entries(data).find(([,r])=>r.status==='waiting'&&Object.keys(r.players||{}).length<(r.maxPlayers||4)&&!Object.keys(r.players||{}).includes(ME.id));
-  if(open){ toast('🎲 Знайдена кімната!'); joinRoom(open[0]); }
+  if(open){ toast('🎲 Знайдена кімната!'); try{ await joinRoom(open[0]); }catch(e){ toast('❌ '+e.message); } }
   else { toast('🎲 Створюємо нову кімнату...'); await autoCreateRoom(); }
 };
 async function autoCreateRoom(){
   try{
     const nr=push(ref(db,'unoRooms'));
-    const sp=ME.photo&&typeof ME.photo==='string'?ME.photo:null;
-    const sid=ME.id||'unknown_'+Date.now();
-    await set(nr,{name:'Рандомна гра 🎲',maxPlayers:4,maxRounds:1,status:'waiting',code:nr.key.slice(-4).toUpperCase(),hostId:sid,currentRound:1,scores:{[sid]:0},players:{[sid]:{name:ME.name||'Гравець',initials:ME.initials||'?',photo:sp,hand:{},color:myColor(),shoutedUno:false}},createdAt:Date.now()});
+    const sp=(ME.photo&&typeof ME.photo==='string')?ME.photo:null;
+    const sid=String(ME.id||('u_'+Date.now()));
+    const nm=String(ME.name||'Гравець');
+    const ini=String(ME.initials||'?');
+    const clr=String(myColor());
+    const code=String(nr.key.slice(-4).toUpperCase());
+    const scoresObj={}; scoresObj[sid]=0;
+    const playerObj={}; playerObj[sid]={name:nm,initials:ini,photo:sp,hand:'none',color:clr,shoutedUno:false};
+    const data={name:'Рандомна гра',maxPlayers:4,maxRounds:1,status:'waiting',code:code,hostId:sid,currentRound:1,scores:scoresObj,players:playerObj,createdAt:Date.now()};
+    await set(nr,data);
     isHost=true; enterRoom(nr.key);
-  }catch(e){ toast('❌ Помилка Firebase: '+e.message); }
+  }catch(e){ console.error('autoCreate:',e); toast('❌ '+e.message); }
 }
 
 window.openCreate=()=>{ document.getElementById('rNameI').value=ME.name+"'s кімната"; document.getElementById('createModal').classList.add('on'); };
@@ -1202,7 +1214,7 @@ window.createRoom=async()=>{
           name:safeName,
           initials:safeInitials,
           photo:safePhoto,
-          hand:{},
+          hand:'none',
           color:myColor(),
           shoutedUno:false
         }
@@ -1225,7 +1237,7 @@ window.joinRoom=async id=>{
   const pl=Object.keys(r.players||{});
   if(pl.length>=r.maxPlayers) return toast('Кімната повна');
   if(pl.includes(ME.id)){ enterRoom(id); return; }
-  await update(ref(db,`unoRooms/${id}/players/${ME.id}`),{name:ME.name||'Гравець',initials:ME.initials||'?',photo:(ME.photo&&typeof ME.photo==='string'?ME.photo:null),hand:{},color:randColor(),shoutedUno:false});
+  await update(ref(db,`unoRooms/${id}/players/${ME.id}`),{name:ME.name||'Гравець',initials:ME.initials||'?',photo:(ME.photo&&typeof ME.photo==='string'?ME.photo:null),hand:'none',color:randColor(),shoutedUno:false});
   if(ME.id) await update(ref(db,`unoRooms/${id}/scores`),{[ME.id]:0});
   isHost=false; enterRoom(id);
 };
