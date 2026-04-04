@@ -499,11 +499,6 @@ window.goNav=function(tab){
 // ═══════════════════════════════════════════
 // renderSocial tournaments hooked via goNav patch above
 
-// ═══════════════════════════════════════════
-// ── PATCH: renderGame reference override ──
-// Need to replace the roomSub listener's renderGame call
-// ═══════════════════════════════════════════
-window.renderGame=renderGameFull;
 
 // ═══════════════════════════════════════════
 // ── VIP COIN MULTIPLIER in addCoins ──
@@ -1791,11 +1786,20 @@ function renderRooms(data){
   el.innerHTML='';
   rooms.forEach(([id,r])=>{
     const pl=Object.keys(r.players||{}),cnt=pl.length,max=r.maxPlayers||4;
-    const full=cnt>=max,playing=r.status==='playing';
-    const div=document.createElement('div'); div.className='room-row'+(!full&&!playing?' open':'');
-    const badge=playing?`<div class="rbadge p">Грають</div>`:full?`<div class="rbadge f">Повна</div>`:`<div class="rbadge o">${cnt}/${max}</div>`;
+    const full=cnt>=max, playing=r.status==='playing';
+    const iAmIn=pl.includes(String(ME.id));
+    // Clickable if: open room OR I'm already in it (to rejoin)
+    const clickable=(!full&&!playing)||iAmIn;
+    const div=document.createElement('div');
+    div.className='room-row'+(clickable?' open':'');
+    let badge;
+    if(iAmIn&&playing) badge=`<div class="rbadge" style="background:var(--blue);color:#fff">↩ Повернутись</div>`;
+    else if(iAmIn) badge=`<div class="rbadge" style="background:var(--gold);color:#0d0f1a">Я тут</div>`;
+    else if(playing) badge=`<div class="rbadge p">Грають</div>`;
+    else if(full) badge=`<div class="rbadge f">Повна</div>`;
+    else badge=`<div class="rbadge o">${cnt}/${max}</div>`;
     div.innerHTML=`<div class="rico">🃏</div><div class="rinfo"><div class="rname">${r.name||'Кімната'}</div><div class="rmeta">${cnt}/${max} гравців${r.maxRounds>1?` · ${r.maxRounds}р`:''}</div></div>${badge}`;
-    if(!full&&!playing) div.onclick=()=>joinRoom(id);
+    if(clickable) div.onclick=()=>joinRoom(id);
     el.appendChild(div);
   });
 }
@@ -1868,16 +1872,28 @@ window.createRoom=async()=>{
   }
 };
 window.joinRoom=async id=>{
-  const snap=await get(ref(db,`unoRooms/${id}`));
-  const r=snap.val();
-  if(!r) return toast('Кімната не знайдена');
-  if(r.status==='playing') return toast('Гра вже йде');
-  const pl=Object.keys(r.players||{});
-  if(pl.length>=r.maxPlayers) return toast('Кімната повна');
-  if(pl.includes(ME.id)){ enterRoom(id); return; }
-  await update(ref(db,`unoRooms/${id}/players/${ME.id}`),{name:ME.name||'Гравець',initials:ME.initials||'?',photo:(ME.photo&&typeof ME.photo==='string'?ME.photo:null),hand:'none',color:randColor(),shoutedUno:false});
-  if(ME.id) await update(ref(db,`unoRooms/${id}/scores`),{[ME.id]:0});
-  isHost=false; enterRoom(id);
+  try{
+    const snap=await get(ref(db,`unoRooms/${id}`));
+    const r=snap.val();
+    if(!r) return toast('Кімната не знайдена');
+    const pl=Object.keys(r.players||{});
+    const alreadyIn=pl.includes(String(ME.id));
+    if(alreadyIn){
+      if(r.status==='playing'){ startGame(r); return; }
+      enterRoom(id); return;
+    }
+    if(r.status==='playing') return toast('Гра вже йде');
+    if(r.status==='done') return toast('Гра завершена');
+    if(pl.length>=(r.maxPlayers||4)) return toast('Кімната повна');
+    await update(ref(db,`unoRooms/${id}/players/${ME.id}`),{
+      name:ME.name||'Гравець',
+      initials:ME.initials||'?',
+      photo:(ME.photo&&typeof ME.photo==='string'?ME.photo:null),
+      hand:'none',color:randColor(),shoutedUno:false
+    });
+    if(ME.id) await update(ref(db,`unoRooms/${id}/scores`),{[ME.id]:0});
+    isHost=false; enterRoom(id);
+  }catch(e){ toast('Помилка: '+e.message); }
 };
 window.shareRoom=()=>{
   if(!roomId) return;
@@ -1930,7 +1946,7 @@ async function deal(r,players,round){
 // ══ GAME ══
 function startGame(r){ gameRoom=r; show('game'); document.getElementById('fabUno').classList.add('on'); document.getElementById('fabChat').classList.add('on'); chalShown=false; cleanupListeners(); roomSub=onValue(ref(db,`unoRooms/${roomId}`),snap=>{ const g=snap.val(); if(!g){ backLobby(); return; } if(g.status==='done'){ showGameOver(g); if(window._onGameOverExtra) window._onGameOverExtra(g); return; } gameRoom=g; if(g.pendingChallenge&&g.pendingChallenge.targetId===ME.id&&!g.pendingChallenge.resolved&&!chalShown){ chalShown=true; showChallenge(g.pendingChallenge.byName); } renderGame(g); }); startChatSub(); }
 
-function renderGame(g){
+function _renderGameBase(g){
   if(!g?.turnOrder) return;
   const top=g.discard?.[g.discard.length-1];
   const myHand=getHand(g.players?.[ME.id]);
@@ -1953,7 +1969,7 @@ function renderGame(g){
   document.getElementById('fabUno').classList.toggle('on',isMe&&myHand.length===2);
   renderBoostsBar(isMe);
   // Timer
-  startTimer(g,isMe);
+  startTurnTimer(g,isMe);
 }
 
 // ── TIMER ──
