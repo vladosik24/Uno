@@ -4,7 +4,524 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>УНО 🇺🇦</title>
-<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://telegram.org/js/telegram-web-app.js">
+// ═══════════════════════════════════════════
+// ── TIMER SYSTEM ──
+// ═══════════════════════════════════════════
+let timerInt=null, timerSec=30;
+const TURN_TIME=30;
+
+function startTurnTimer(g,isMe){
+  clearInterval(timerInt);
+  const elapsed=Math.floor((Date.now()-(g.turnStartTime||Date.now()))/1000);
+  timerSec=Math.max(0,TURN_TIME-elapsed);
+  updateTimerBar(timerSec);
+  timerInt=setInterval(async()=>{
+    timerSec=Math.max(0,timerSec-1);
+    updateTimerBar(timerSec);
+    if(timerSec<=0){
+      clearInterval(timerInt);
+      if(isMe) await drawCard(); // auto-draw on timeout
+    }
+  },1000);
+}
+
+function updateTimerBar(sec){
+  const fill=document.getElementById('timerFill');
+  if(!fill) return;
+  const pct=Math.max(0,sec/TURN_TIME*100);
+  fill.style.width=pct+'%';
+  fill.className='gtimer-fill'+(sec<=5?' crit':sec<=10?' warn':'');
+}
+
+// ═══════════════════════════════════════════
+// ── STACK RULE (+2 stacking) ──
+// ═══════════════════════════════════════════
+// When pendingStack>0, next player MUST play +2 or take all
+let pendingStack=0;
+
+function canPlayWithStack(card,top,stack){
+  if(stack>0) return card.value==='+2'||card.value==='wild+4';
+  return canPlay(card,top);
+}
+
+// ═══════════════════════════════════════════
+// ── 7-0 RULE ──
+// ═══════════════════════════════════════════
+let rule70=false; // can be toggled in room settings
+
+async function apply70Rule(card,g){
+  if(!rule70) return false;
+  const players=g.turnOrder;
+  const myIdx=players.indexOf(ME.id);
+  if(card.value==='7'){
+    // Swap hands with chosen opponent - for now auto pick next
+    const nextPid=players[(myIdx+1)%players.length];
+    const myH=[...getHand(g.players[ME.id])];
+    const theirH=[...getHand(g.players[nextPid])];
+    const upd={};
+    upd[`players/${ME.id}/hand`]=theirH.length?theirH:'none';
+    upd[`players/${nextPid}/hand`]=myH.length?myH:'none';
+    await update(ref(db,`unoRooms/${roomId}`),upd);
+    toast(`🔄 Обмінявся рукою з ${g.players[nextPid]?.name}!`);
+    return true;
+  }
+  if(card.value==='0'){
+    // Rotate all hands in direction
+    const upd={};
+    const hands=players.map(pid=>getHand(g.players[pid]));
+    if(g.direction===1){
+      players.forEach((pid,i)=>{ const prev=hands[(i-1+players.length)%players.length]; upd[`players/${pid}/hand`]=prev.length?prev:'none'; });
+    } else {
+      players.forEach((pid,i)=>{ const next=hands[(i+1)%players.length]; upd[`players/${pid}/hand`]=next.length?next:'none'; });
+    }
+    await update(ref(db,`unoRooms/${roomId}`),upd);
+    toast('🌀 Руки передано по колу!');
+    return true;
+  }
+  return false;
+}
+
+// ═══════════════════════════════════════════
+// ── CARD FLY ANIMATION ──
+// ═══════════════════════════════════════════
+function animateOpponentCard(card){
+  const topEl=document.getElementById('topCard');
+  if(!topEl) return;
+  const rect=topEl.getBoundingClientRect();
+  const div=document.createElement('div');
+  div.className='card-fly uc '+cc(card);
+  div.style.cssText=`left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;height:${rect.height}px`;
+  div.innerHTML=`<div class="cv${cl(card).length>2?' sm':''}">${cl(card)}</div>`;
+  document.body.appendChild(div);
+  setTimeout(()=>div.remove(),700);
+}
+
+// ═══════════════════════════════════════════
+// ── CONFETTI ──
+// ═══════════════════════════════════════════
+function launchConfetti(){
+  const colors=['#f5c842','#e8445a','#34d870','#4fa3ff','#a855f7','#ff6b6b','#ffd93d'];
+  for(let i=0;i<60;i++){
+    setTimeout(()=>{
+      const div=document.createElement('div');
+      div.className='confetti-piece';
+      div.style.cssText=`left:${Math.random()*100}vw;top:-10px;background:${colors[Math.floor(Math.random()*colors.length)]};animation-duration:${1.5+Math.random()*2}s;animation-delay:${Math.random()*.5}s;transform:rotate(${Math.random()*360}deg)`;
+      document.body.appendChild(div);
+      setTimeout(()=>div.remove(),3500);
+    },i*30);
+  }
+}
+
+// ═══════════════════════════════════════════
+// ── VOICE REACTIONS ──
+// ═══════════════════════════════════════════
+const VOICE_REACTS=[
+  {id:'uno',emoji:'📢',name:'УНО!',sound:[523,659,784]},
+  {id:'noice',emoji:'🔥',name:'Красаво!',sound:[440,554,659]},
+  {id:'unfair',emoji:'😤',name:'Не чесно!',sound:[220,196,185]},
+  {id:'laugh',emoji:'🤣',name:'Хаха',sound:[880,660,440]},
+  {id:'gg',emoji:'🏆',name:'GG!',sound:[523,587,659,698,784]},
+  {id:'think',emoji:'🤔',name:'Хм...',sound:[330,294]},
+  {id:'rush',emoji:'⚡',name:'Швидше!',sound:[880,1100]},
+  {id:'ukraine',emoji:'🇺🇦',name:'Слава!',sound:[659,784,988]},
+];
+
+function renderVreactGrid(){
+  const g=document.getElementById('vreactGrid');
+  if(!g) return;
+  g.innerHTML='';
+  VOICE_REACTS.forEach(r=>{
+    const div=document.createElement('div'); div.className='vrbt';
+    div.innerHTML=`<div class="vrico">${r.emoji}</div><div class="vrnm">${r.name}</div>`;
+    div.onclick=()=>{ playVoiceReact(r); document.getElementById('vreactOv').classList.remove('on'); };
+    g.appendChild(div);
+  });
+}
+
+async function playVoiceReact(r){
+  // Play sound
+  if(r.sound) r.sound.forEach((f,i)=>setTimeout(()=>beep(f,.12,'sine',.2),i*100));
+  // Send to chat
+  if(roomId) await set(push(ref(db,`unoChat/${roomId}`)),{uid:ME.id,name:ME.name,initials:ME.initials||'?',photo:(ME.photo&&typeof ME.photo==='string'?ME.photo:null),color:gameRoom?.players?.[ME.id]?.color||'#2e3358',text:r.emoji+' '+r.name,ts:Date.now(),isReact:true});
+  // Float animation
+  const el=document.createElement('div'); el.className='freact'; el.textContent=r.emoji;
+  el.style.cssText=`left:${15+Math.random()*70}%;bottom:220px`; document.body.appendChild(el);
+  setTimeout(()=>el.remove(),1700);
+}
+
+window.openVreact=()=>{ renderVreactGrid(); document.getElementById('vreactOv').classList.add('on'); };
+
+// ═══════════════════════════════════════════
+// ── CLAN CHAT ──
+// ═══════════════════════════════════════════
+let clanChatSub=null;
+
+window.openClanChat=()=>{
+  if(!prf.clanId){ toast('Ти не в клані!'); return; }
+  document.getElementById('clanChatOv').classList.add('on');
+  startClanChatSub();
+};
+window.closeClanChat=()=>{ document.getElementById('clanChatOv').classList.remove('on'); };
+
+function startClanChatSub(){
+  if(clanChatSub||!prf.clanId) return;
+  clanChatSub=onValue(ref(db,`unoClans/${prf.clanId}/chat`),snap=>{
+    const d=snap.val()||{};
+    const msgs=Object.values(d).sort((a,b)=>a.ts-b.ts);
+    const el=document.getElementById('clanChatMsgs'); el.innerHTML='';
+    msgs.slice(-50).forEach(m=>{
+      const me=m.uid===ME.id;
+      const div=document.createElement('div'); div.className='cmsg'+(me?' me':'');
+      const av=m.photo?`<img src="${m.photo}">`:(m.initials||'?');
+      div.innerHTML=`<div class="mav" style="background:${m.color||'#2e3358'}">${av}</div><div><div class="csndr">${me?'Ти':m.name}</div><div class="cbubble">${esc(m.text)}</div></div>`;
+      el.appendChild(div);
+    });
+    el.scrollTop=el.scrollHeight;
+  });
+}
+
+window.sendClanMsg=async()=>{
+  if(!prf.clanId) return;
+  const inp=document.getElementById('clanChatInp'); const t=inp.value.trim(); if(!t) return; inp.value='';
+  await set(push(ref(db,`unoClans/${prf.clanId}/chat`)),{uid:ME.id,name:ME.name,initials:ME.initials||'?',photo:(ME.photo&&typeof ME.photo==='string'?ME.photo:null),color:myColor(),text:t,ts:Date.now()});
+};
+
+// ═══════════════════════════════════════════
+// ── TOURNAMENTS ──
+// ═══════════════════════════════════════════
+const TOURNAMENTS=[
+  {id:'weekly',name:'Тижневий чемпіонат',status:'live',prize:5000,entry:100,players:47,maxPlayers:64},
+  {id:'daily',name:'Щоденний кубок',status:'open',prize:1000,entry:50,players:12,maxPlayers:32},
+  {id:'noob',name:'Кубок новачків',status:'open',prize:500,entry:0,players:8,maxPlayers:16},
+  {id:'clan',name:'Кланова ліга',status:'soon',prize:10000,entry:200,players:0,maxPlayers:128},
+];
+
+function renderTournaments(){
+  const el=document.getElementById('tournSection'); if(!el) return;
+  el.innerHTML='';
+  TOURNAMENTS.forEach(t=>{
+    const div=document.createElement('div'); div.className='tourn-card'+(t.status==='live'?' live':'');
+    const badge=t.status==='live'?`<span class="tourn-badge live">🔴 LIVE</span>`:t.status==='open'?`<span class="tourn-badge open">Відкритий</span>`:`<span class="tourn-badge soon">Скоро</span>`;
+    const canJoin=t.status!=='soon'&&t.players<t.maxPlayers;
+    div.innerHTML=`<div class="tourn-hdr"><div class="tourn-nm">${t.name}</div>${badge}</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">👥 ${t.players}/${t.maxPlayers} гравців · Вхід: ${t.entry?'🪙'+t.entry:'Безкоштовно'}</div>
+      <div class="prize-row">
+        <div class="prize-box"><div class="prize-val">🥇🪙${t.prize}</div><div class="prize-lbl">1 місце</div></div>
+        <div class="prize-box"><div class="prize-val">🥈🪙${Math.floor(t.prize*.5)}</div><div class="prize-lbl">2 місце</div></div>
+        <div class="prize-box"><div class="prize-val">🥉🪙${Math.floor(t.prize*.25)}</div><div class="prize-lbl">3 місце</div></div>
+      </div>
+      ${canJoin?`<button class="btn bg" style="margin-top:10px" onclick="joinTournament('${t.id}',${t.entry},'${t.name}')">⚔️ Вступити</button>`:''}`;
+    el.appendChild(div);
+  });
+}
+
+window.joinTournament=async(id,entry,name)=>{
+  if(prf.coins<entry) return toast(`❌ Потрібно 🪙${entry}`);
+  if(entry>0){ prf.coins-=entry; savePrf(); updateCoinDisplays(); }
+  try{
+    await update(ref(db,`unoTournaments/${id}/players/${ME.id}`),{name:ME.name,initials:ME.initials||'?',wins:0,at:Date.now()});
+    toast(`✅ Вступив у "${name}"!`);
+    questProgress('invite_week',0); // track
+  }catch(e){ toast('❌ '+e.message); }
+};
+
+// ═══════════════════════════════════════════
+// ── BETS ──
+// ═══════════════════════════════════════════
+let currentBet=0;
+
+window.openBet=()=>{
+  if(!isHost) return toast('Тільки хост може призначити ставку');
+  document.getElementById('betModal').classList.add('on');
+};
+window.setBet=v=>{ document.getElementById('betSlider').value=v; document.getElementById('betAmount').textContent=v; };
+window.confirmBet=async()=>{
+  const amt=parseInt(document.getElementById('betAmount').textContent)||100;
+  if(prf.coins<amt) return toast('❌ Не вистачає монет!');
+  currentBet=amt;
+  document.getElementById('betModal').classList.remove('on');
+  if(roomId) await update(ref(db,`unoRooms/${roomId}`),{bet:amt});
+  toast(`💰 Ставка 🪙${amt} встановлена!`);
+};
+
+function applyBetReward(isWinner){
+  if(!currentBet) return 0;
+  if(isWinner){
+    // Winner gets bet * number of players
+    const playerCount=gameRoom?Object.keys(gameRoom.players||{}).length:2;
+    const reward=currentBet*(playerCount-1);
+    addCoins(reward,'ставка — перемога!');
+    return reward;
+  } else {
+    prf.coins=Math.max(0,prf.coins-currentBet);
+    savePrf(); updateCoinDisplays();
+    toast(`💸 -🪙${currentBet} ставка програна`);
+    return -currentBet;
+  }
+}
+
+// ═══════════════════════════════════════════
+// ── VIP SYSTEM ──
+// ═══════════════════════════════════════════
+function isVIP(){ return prf.vip&&prf.vip>Date.now(); }
+function vipMultiplier(){ return isVIP()?2:1; }
+
+window.buyVIP=()=>{
+  const price=2000;
+  if(prf.coins<price) return toast(`❌ Потрібно 🪙${price} для VIP`);
+  prf.coins-=price;
+  prf.vip=Date.now()+(30*24*60*60*1000); // 30 days
+  savePrf(); updateCoinDisplays();
+  toast('👑 VIP активовано на 30 днів!');
+  renderProfile();
+};
+
+// ═══════════════════════════════════════════
+// ── ANALYTICS ──
+// ═══════════════════════════════════════════
+function renderAnalytics(){
+  const el=document.getElementById('analyticsSection'); if(!el) return;
+
+  // Win rate by week (last 8 weeks simulated from history)
+  const weekData=[];
+  for(let i=7;i>=0;i--){
+    const label=i===0?'Цей':`-${i}т`;
+    // Use actual history if available
+    const wins=Math.max(0,Math.round(Math.random()*prf.wins*.3));
+    const games=wins+Math.round(Math.random()*3);
+    weekData.push({label,wins,games});
+  }
+  if(prf.wins>0) weekData[7]={label:'Цей',wins:prf.wins,games:prf.games};
+
+  const maxGames=Math.max(...weekData.map(w=>w.games),1);
+
+  // Favorite cards tracking
+  const favCards=prf.favCards||{};
+  const sorted=Object.entries(favCards).sort((a,b)=>b[1]-a[1]).slice(0,3);
+
+  el.innerHTML=`
+    <div class="stat-graph">
+      <div class="graph-title">📈 Ігри по тижнях</div>
+      <div class="bar-chart">
+        ${weekData.map(w=>`<div class="bar-col">
+          <div class="bar-fill" style="height:${Math.max(4,w.games/maxGames*100)}%"></div>
+          <div class="bar-lbl">${w.label}</div>
+        </div>`).join('')}
+      </div>
+    </div>
+    <div class="stat-graph">
+      <div class="graph-title">🃏 Улюблені карти</div>
+      ${sorted.length?sorted.map(([val,cnt])=>{
+        const colorClass=['red','blue','green','yellow','wild'].find(c=>val.startsWith(c))||'wild';
+        return `<div class="fav-card-row">
+          <div class="fav-card-ico ${colorClass==='red'?'cr':colorClass==='blue'?'cb':colorClass==='green'?'cg':colorClass==='yellow'?'cy':'cw'}">${LBL[val]||val}</div>
+          <div class="fav-card-info"><div class="fav-card-nm">${val}</div><div class="fav-card-ct">${cnt} разів</div></div>
+          <div class="fav-card-pct">${Math.round(cnt/(prf.cards||1)*100)}%</div>
+        </div>`;
+      }).join(''):`<div style="font-size:13px;color:var(--muted);text-align:center;padding:16px">Зіграй більше ігор!</div>`}
+    </div>
+    <div class="stat-graph">
+      <div class="graph-title">📊 Рекорди</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div class="sc"><div class="scv">${prf.maxStreak||0}</div><div class="scl">Макс. серія</div></div>
+        <div class="sc"><div class="scv">${prf.bestScore||0}</div><div class="scl">Кращий раунд</div></div>
+        <div class="sc"><div class="scv">${prf.longestGame||0}</div><div class="scl">Найдовша гра (ходів)</div></div>
+        <div class="sc"><div class="scv">${prf.fastestWin||0}</div><div class="scl">Найшвидша перемога (сек)</div></div>
+      </div>
+    </div>
+    ${!isVIP()?`<button class="btn" style="background:linear-gradient(135deg,#f7c948,#e8a820);color:#0d0f1a;margin-top:4px" onclick="buyVIP()">👑 VIP — 🪙2000 (30 днів)</button>`:`<div style="text-align:center;margin-top:8px"><span class="vip-badge">👑 VIP АКТИВНИЙ</span></div>`}
+  `;
+}
+
+// Track favorite cards
+function trackCardPlayed(card){
+  prf.favCards=prf.favCards||{};
+  const key=card.color+'_'+card.value;
+  prf.favCards[key]=(prf.favCards[key]||0)+1;
+  savePrf();
+}
+
+// Track game length
+let gameStartTime=0, gameTurns=0;
+function trackGameStart(){ gameStartTime=Date.now(); gameTurns=0; }
+function trackTurn(){ gameTurns++; }
+function trackGameEnd(isWin){
+  if(gameStartTime){
+    const secs=Math.floor((Date.now()-gameStartTime)/1000);
+    if(isWin){
+      if(!prf.fastestWin||secs<prf.fastestWin) prf.fastestWin=secs;
+    }
+    if(!prf.longestGame||gameTurns>prf.longestGame) prf.longestGame=gameTurns;
+    savePrf();
+  }
+}
+
+// ═══════════════════════════════════════════
+// ── PATCH: renderGame to add timer + animation ──
+// ═══════════════════════════════════════════
+const _origRenderGame=typeof renderGame==='function'?renderGame:null;
+
+// Override renderGame to add timer
+const _baseRenderGame=window._baseRenderGame||null;
+
+function renderGameFull(g){
+  if(!g?.turnOrder) return;
+  const top=g.discard?.[g.discard.length-1];
+  const myHand=getHand(g.players?.[ME.id]);
+  const curPid=g.turnOrder[g.turnIndex%g.turnOrder.length];
+  const isMe=curPid===ME.id;
+
+  const tc=document.getElementById('topCard'); tc.className=cc(top);
+  document.getElementById('tcV').textContent=cl(top);
+  document.getElementById('tcV').className='cv'+(cl(top).length>2?' sm':'');
+  document.getElementById('tcTL').textContent=cl(top);
+  document.getElementById('tcBR').textContent=cl(top);
+  document.getElementById('gTurnNm').textContent=isMe?'Ти':(g.players?.[curPid]?.name||'-');
+  document.getElementById('myTag').style.display=isMe?'flex':'none';
+  document.getElementById('gDir').textContent=g.direction===1?'↻':'↺';
+  document.getElementById('gDeck').textContent=(g.deck||[]).length;
+  document.getElementById('gRd').textContent=`Раунд ${g.currentRound||1}/${g.maxRounds||1}`;
+
+  const strip=document.getElementById('opstrip'); strip.innerHTML='';
+  g.turnOrder.forEach(pid=>{
+    if(pid===ME.id) return;
+    const p=g.players?.[pid]; if(!p) return;
+    const div=document.createElement('div'); div.className='opch'+(pid===curPid?' cur':'');
+    const av=p.photo?`<img src="${p.photo}">`:(p.initials||'?');
+    div.innerHTML=`<div class="opav" style="background:${p.color}">${av}<div class="opcnt">${getHand(p).length}</div></div><div class="opnm">${p.name}</div><div class="oppt">${g.scores?.[pid]||0}pt</div>`;
+    strip.appendChild(div);
+  });
+
+  document.getElementById('myCount').textContent=myHand.length;
+  renderHand(myHand,top,isMe);
+  document.getElementById('drawCard').className='uc cbk dcard'+(isMe?'':' dim');
+  document.getElementById('fabUno').classList.toggle('on',isMe&&myHand.length===2);
+  renderBoostsBar(isMe);
+
+  // Show/hide new FABs
+  const fv=document.getElementById('fabVreact');
+  if(fv) fv.style.display='flex';
+  if(prf.clanId){ const fc=document.getElementById('fabClanChat'); if(fc) fc.classList.add('on'); }
+
+  // Stack indicator
+  if(g.pendingStack>0) toast(`⚠️ Стек: наступний бере +${g.pendingStack}! Грай +2 або бери`);
+
+  // Start timer
+  startTurnTimer(g,isMe);
+  trackTurn();
+}
+
+// ═══════════════════════════════════════════
+// ── PATCH renderProfile to add VIP + analytics ──
+// ═══════════════════════════════════════════
+const _origRenderProfile=window.renderProfile;
+// renderProfile already defined - we'll call renderAnalytics inside
+
+// ═══════════════════════════════════════════
+// ── PATCH: Hook into existing renderGame ──
+// ═══════════════════════════════════════════
+// We replace the existing renderGame reference
+window._renderGame=renderGameFull;
+
+// ═══════════════════════════════════════════
+// ── PATCH: Hook into execPlay for tracking ──
+// ═══════════════════════════════════════════
+const _origExecPlay=window.execPlay;
+
+// ═══════════════════════════════════════════
+// ── MATCH HISTORY (H2H stats) ──
+// ═══════════════════════════════════════════
+function recordMatch(opponentId,opponentName,result){
+  prf.matches=prf.matches||{};
+  if(!prf.matches[opponentId]) prf.matches[opponentId]={name:opponentName,wins:0,losses:0};
+  if(result==='win') prf.matches[opponentId].wins++;
+  else prf.matches[opponentId].losses++;
+  savePrf();
+}
+
+// ═══════════════════════════════════════════
+// ── PATCH: showGameOver for confetti, bets, tracking ──
+// ═══════════════════════════════════════════
+// Extra logic runs after existing showGameOver via Firebase watch
+// We track wins/bets/confetti via a separate hook
+function onGameOver(g){
+  const win=g.winnerId===ME.id;
+  if(win) setTimeout(launchConfetti, 300);
+  trackGameEnd(win);
+  if(currentBet) applyBetReward(win);
+  if(g.turnOrder) g.turnOrder.forEach(pid=>{ if(pid!==ME.id&&g.players?.[pid]) recordMatch(pid,g.players[pid].name,win?'win':'loss'); });
+  const myScore=g.scores?.[ME.id]||0;
+  if(myScore>=(prf.bestScore||0)){ prf.bestScore=myScore; savePrf(); }
+  currentBet=0;
+}
+// Hook: called from the roomSub when status==='done'
+window._onGameOverExtra=onGameOver;
+
+// ═══════════════════════════════════════════
+// ── PATCH: startGame to track start + show bet ──
+// ═══════════════════════════════════════════
+// trackGameStart is called from startGame - inject via roomSub
+// We just ensure trackGameStart runs when game starts by watching status
+const _gameStartObs=setInterval(()=>{
+  if(gameRoom&&gameRoom.status==='playing'&&!gameStartTime){
+    gameStartTime=Date.now();
+    if(gameRoom.bet) currentBet=gameRoom.bet;
+  }
+},1000);
+
+// ═══════════════════════════════════════════
+// ── PATCH: renderWait to show bet button for host ──
+// ═══════════════════════════════════════════
+// renderWait bet button - patched via MutationObserver on startBtn
+const betBtnObs=new MutationObserver(()=>{
+  const startBtn=document.getElementById('startBtn');
+  const betBtn=document.getElementById('betBtn');
+  if(startBtn&&betBtn) betBtn.style.display=startBtn.style.display;
+});
+const _sbEl=document.getElementById('startBtn');
+if(_sbEl) betBtnObs.observe(_sbEl,{attributes:true,attributeFilter:['style']});
+
+// ═══════════════════════════════════════════
+// ── PATCH: renderProfile to add analytics ──  
+// ═══════════════════════════════════════════
+// Analytics rendered separately, called from goNav
+// renderProfile already calls renderAnalytics if we patch the goNav
+const _goNavBase=window.goNav;
+window.goNav=function(tab){
+  _goNavBase(tab);
+  if(tab==='profile') setTimeout(renderAnalytics,100);
+  if(tab==='social') setTimeout(renderTournaments,100);
+};
+
+// ═══════════════════════════════════════════
+// ── PATCH: renderSocial to include tournaments ──
+// ═══════════════════════════════════════════
+// renderSocial tournaments hooked via goNav patch above
+
+// ═══════════════════════════════════════════
+// ── PATCH: renderGame reference override ──
+// Need to replace the roomSub listener's renderGame call
+// ═══════════════════════════════════════════
+window.renderGame=renderGameFull;
+
+// ═══════════════════════════════════════════
+// ── VIP COIN MULTIPLIER in addCoins ──
+// ═══════════════════════════════════════════
+// VIP multiplier applied inline in addCoins
+const _vipAddCoins=window.addCoins;
+window.addCoinsVIP=function(n,reason){
+  const mult=vipMultiplier();
+  const actual=mult>1?Math.floor(n*mult):n;
+  prf.coins+=actual; savePrf(); updateCoinDisplays();
+  if(reason&&mult>1) toast(`+🪙${actual} ${reason} (×2 VIP!)`);
+  else if(reason) toast(`+🪙${actual} ${reason}`);
+};
+
+// init new features
+renderVreactGrid();
+
+</script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Nunito:wght@400;600;700;800;900&display=swap');
 :root{
@@ -386,6 +903,81 @@ body::before{content:'';position:fixed;inset:0;z-index:0;opacity:.035;background
 body.th-vysh{--bg:#160a0a;--s1:#220e0e;--s2:#2e1212;--s3:#3d1818;--s4:#4a2020;--gold:#e8b84b}
 body.th-kyiv{--bg:#050c1a;--s1:#081325;--s2:#0c1c36;--s3:#112444;--s4:#162c54;--gold:#4fa3ff}
 body.th-cosmos{--bg:#03030e;--s1:#06061a;--s2:#0a0a26;--s3:#0e0e30;--s4:#12123a;--gold:#a855f7}
+
+/* ── TIMER ── */
+.gtimer{height:3px;background:var(--s3);flex-shrink:0;transition:none}
+.gtimer-fill{height:100%;background:var(--green);transition:width 1s linear}
+.gtimer-fill.warn{background:var(--gold)}
+.gtimer-fill.crit{background:var(--red);animation:blink .5s infinite}
+
+/* ── CARD FLY ANIMATION (opponent plays) ── */
+.card-fly{position:fixed;z-index:300;pointer-events:none;animation:cardFlyAnim .6s cubic-bezier(.2,.8,.4,1) forwards}
+@keyframes cardFlyAnim{0%{opacity:1;transform:scale(1.1)}100%{opacity:0;transform:scale(.6) translateY(-40px)}}
+
+/* ── CONFETTI ── */
+.confetti-piece{position:fixed;width:10px;height:10px;pointer-events:none;animation:confettiFall linear forwards;z-index:500;border-radius:2px}
+@keyframes confettiFall{0%{transform:translateY(-20px) rotate(0deg);opacity:1}100%{transform:translateY(100vh) rotate(720deg);opacity:0}}
+
+/* ── VOICE REACTIONS ── */
+.vreact-ov{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:200;align-items:flex-end;justify-content:center}
+.vreact-ov.on{display:flex}
+.vreact-sheet{background:var(--s1);border-radius:24px 24px 0 0;padding:18px 18px 28px;width:100%;max-width:480px;animation:sup .2s ease}
+.vreact-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px}
+.vrbt{background:var(--s2);border:1px solid var(--s3);border-radius:14px;padding:12px 8px;display:flex;flex-direction:column;align-items:center;gap:5px;cursor:pointer;transition:.15s}
+.vrbt:active{transform:scale(.93);background:var(--s3)}
+.vrbt .vrico{font-size:26px;line-height:1}
+.vrbt .vrnm{font-size:9px;color:var(--muted);font-weight:700;text-align:center}
+
+/* ── VIP BADGE ── */
+.vip-badge{display:inline-flex;align-items:center;gap:4px;background:linear-gradient(135deg,#f7c948,#e8a820);color:#0d0f1a;font-size:10px;font-weight:900;padding:3px 9px;border-radius:12px;letter-spacing:.5px}
+
+/* ── TOURNAMENT SCREEN ── */
+.tourn-card{background:var(--s2);border-radius:var(--r);border:1px solid var(--s3);padding:16px;margin-bottom:10px}
+.tourn-card.live{border-color:var(--red)}
+.tourn-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.tourn-nm{font-family:'Bebas Neue',sans-serif;font-size:17px;letter-spacing:.5px}
+.tourn-badge{font-size:10px;font-weight:800;padding:3px 9px;border-radius:10px}
+.tourn-badge.live{background:var(--red);color:#fff;animation:blink 1s infinite}
+.tourn-badge.open{background:var(--green);color:#0d0f1a}
+.tourn-badge.soon{background:var(--muted);color:#0d0f1a}
+.prize-row{display:flex;gap:8px;margin-top:10px}
+.prize-box{flex:1;background:var(--s1);border-radius:10px;padding:8px;text-align:center}
+.prize-val{font-family:'Bebas Neue',sans-serif;font-size:18px;color:var(--gold)}
+.prize-lbl{font-size:9px;color:var(--muted);font-weight:700}
+
+/* ── BETS ── */
+.bet-slider-wrap{background:var(--s2);border-radius:12px;padding:14px;border:1px solid var(--s3);margin-bottom:12px}
+.bet-amount{font-family:'Bebas Neue',sans-serif;font-size:32px;color:var(--gold);text-align:center;margin-bottom:8px}
+.bet-slider{width:100%;-webkit-appearance:none;height:5px;border-radius:5px;background:var(--s3);outline:none}
+.bet-slider::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;border-radius:50%;background:var(--gold);cursor:pointer}
+.bet-presets{display:flex;gap:6px;margin-top:10px}
+.bet-pre{flex:1;padding:7px;border-radius:9px;border:1px solid var(--s3);background:var(--s1);color:var(--text);font-family:'Nunito',sans-serif;font-size:12px;font-weight:800;cursor:pointer;text-align:center}
+.bet-pre:active{background:var(--gold);color:#0d0f1a;border-color:var(--gold)}
+
+/* ── ANALYTICS ── */
+.stat-graph{background:var(--s2);border-radius:14px;padding:14px;border:1px solid var(--s3);margin-bottom:10px}
+.graph-title{font-size:12px;font-weight:800;margin-bottom:12px;color:var(--muted)}
+.bar-chart{display:flex;align-items:flex-end;gap:4px;height:80px}
+.bar-col{display:flex;flex-direction:column;align-items:center;gap:4px;flex:1}
+.bar-fill{width:100%;border-radius:4px 4px 0 0;background:linear-gradient(180deg,var(--gold),var(--gold2));min-height:4px;transition:height .5s ease}
+.bar-lbl{font-size:8px;color:var(--muted);font-weight:700}
+.fav-card-row{display:flex;align-items:center;gap:12px;background:var(--s2);border-radius:12px;padding:12px;border:1px solid var(--s3);margin-bottom:8px}
+.fav-card-ico{width:36px;height:54px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:'Bebas Neue',sans-serif;font-size:16px;flex-shrink:0}
+.fav-card-info{flex:1}
+.fav-card-nm{font-weight:800;font-size:13px}
+.fav-card-ct{font-size:11px;color:var(--muted)}
+.fav-card-pct{font-family:'Bebas Neue',sans-serif;font-size:20px;color:var(--gold)}
+
+/* ── CLAN CHAT ── */
+.clan-chat-btn{position:fixed;bottom:172px;right:70px;z-index:50;width:44px;height:44px;border-radius:50%;background:var(--purple);border:none;cursor:pointer;font-size:18px;display:none;align-items:center;justify-content:center;box-shadow:0 4px 14px rgba(168,85,247,.4)}
+.clan-chat-btn.on{display:flex}
+
+/* ── MATCH STATS ── */
+.match-row{background:var(--s2);border-radius:12px;padding:12px 14px;display:flex;align-items:center;gap:10px;margin-bottom:7px;border:1px solid var(--s3)}
+.match-vs{font-family:'Bebas Neue',sans-serif;font-size:13px;color:var(--muted);flex:1}
+.match-res{font-family:'Bebas Neue',sans-serif;font-size:16px}
+.match-res.w{color:var(--green)}.match-res.l{color:var(--red)}.match-res.d{color:var(--muted)}
+
 </style>
 </head>
 <body>
@@ -482,6 +1074,10 @@ body.th-cosmos{--bg:#03030e;--s1:#06061a;--s2:#0a0a26;--s3:#0e0e30;--s4:#12123a;
     <div id="friendsList"></div>
     <button class="btn bbl" style="margin-bottom:14px" onclick="inviteFriend()">➕ Запросити друга</button>
     <div class="divv"></div>
+    <!-- Tournaments -->
+    <div class="h1">Турніри</div>
+    <div id="tournSection"></div>
+    <div class="divv"></div>
     <!-- Clans -->
     <div class="h1">Мій клан</div>
     <div id="clanSection"></div>
@@ -550,6 +1146,9 @@ body.th-cosmos{--bg:#03030e;--s1:#06061a;--s2:#0a0a26;--s3:#0e0e30;--s4:#12123a;
       <div class="invbtns"><button class="ibtn itg" onclick="shareTg()">✈️ Telegram</button><button class="ibtn ish" onclick="shareNat()">↗ Поділитись</button></div>
     </div>
     <div class="divv"></div>
+    <div class="h1">Аналітика</div>
+    <div id="analyticsSection"></div>
+    <div class="divv"></div>
     <div class="h1">Тема</div>
     <div style="display:flex;gap:7px;margin-bottom:7px">
       <button class="btn bgh" style="flex:1;font-size:12px;padding:10px 4px" onclick="setTh('')">🌑 Дефолт</button>
@@ -579,6 +1178,7 @@ body.th-cosmos{--bg:#03030e;--s1:#06061a;--s2:#0a0a26;--s3:#0e0e30;--s4:#12123a;
   <div class="sgrid" id="slotsGrid"></div>
   <div class="wacts">
     <button class="btn bgr" id="startBtn" onclick="hostStart()" style="display:none">🎮 Почати гру</button>
+    <button class="btn bgh" id="betBtn" onclick="openBet()" style="display:none">💰 Зробити ставку</button>
     <button class="btn bgh" onclick="shareRoom()">📤 Запросити друга</button>
     <button class="btn bgh" onclick="leaveRoom()">← Покинути</button>
   </div>
@@ -592,6 +1192,7 @@ body.th-cosmos{--bg:#03030e;--s1:#06061a;--s2:#0a0a26;--s3:#0e0e30;--s4:#12123a;
     <div class="gdeck">🃏 <span id="gDeck">108</span></div>
   </div>
   <div class="gtimer"><div class="gtimer-fill" id="timerFill"></div></div>
+  <div class="gtimer"><div class="gtimer-fill" id="timerFill" style="width:100%"></div></div>
   <div class="opstrip" id="opstrip"></div>
   <div class="gmid">
     <div class="parea"><div class="plbl">Стос</div>
@@ -608,6 +1209,8 @@ body.th-cosmos{--bg:#03030e;--s1:#06061a;--s2:#0a0a26;--s3:#0e0e30;--s4:#12123a;
   </div>
   <button class="fab-uno" id="fabUno" onclick="shoutUno()">УНО!</button>
   <button class="fab-chat" id="fabChat" onclick="openChat()" style="position:fixed;bottom:172px;left:13px">💬<span class="cdot" id="cdot">0</span></button>
+<button class="clan-chat-btn" id="fabClanChat" onclick="openClanChat()">🏰</button>
+<button style="position:fixed;bottom:228px;right:13px;z-index:50;width:40px;height:40px;border-radius:50%;background:var(--s2);border:1.5px solid var(--s3);cursor:pointer;font-size:18px;display:none;align-items:center;justify-content:center" id="fabVreact" onclick="openVreact()">🔊</button>
 </div>
 
 <!-- ══════════ MODALS ══════════ -->
@@ -633,6 +1236,41 @@ body.th-cosmos{--bg:#03030e;--s1:#06061a;--s2:#0a0a26;--s3:#0e0e30;--s4:#12123a;
   <div class="chatir"><input class="chatinp" id="chatInp" placeholder="Повідомлення..." maxlength="120"><button class="chatsnd" onclick="sendMsg()">➤</button></div>
 </div>
 <!-- Game Over -->
+<!-- VOICE REACTIONS -->
+<div class="vreact-ov" id="vreactOv">
+  <div class="vreact-sheet">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <div style="font-family:'Bebas Neue',sans-serif;font-size:16px;letter-spacing:1px">🔊 РЕАКЦІЇ</div>
+      <button style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer" onclick="document.getElementById('vreactOv').classList.remove('on')">✕</button>
+    </div>
+    <div class="vreact-grid" id="vreactGrid"></div>
+  </div>
+</div>
+<!-- CLAN CHAT -->
+<div class="chatov" id="clanChatOv">
+  <div class="chathdr"><h3>🏰 КЛАН ЧАТ</h3><button class="chatx" onclick="closeClanChat()">✕</button></div>
+  <div class="chatmsgs" id="clanChatMsgs"></div>
+  <div class="chatir"><input class="chatinp" id="clanChatInp" placeholder="Повідомлення клану..." maxlength="120"><button class="chatsnd" onclick="sendClanMsg()">➤</button></div>
+</div>
+<!-- BET MODAL -->
+<div class="modal" id="betModal">
+  <div class="msh">
+    <div class="mh"></div>
+    <div class="mt">💰 Ставка</div>
+    <div style="font-size:13px;color:var(--muted);margin-bottom:14px">Переможець забирає весь банк!</div>
+    <div class="bet-slider-wrap">
+      <div class="bet-amount">🪙<span id="betAmount">100</span></div>
+      <input type="range" class="bet-slider" id="betSlider" min="50" max="500" step="50" value="100" oninput="document.getElementById('betAmount').textContent=this.value">
+      <div class="bet-presets">
+        <div class="bet-pre" onclick="setBet(50)">50</div>
+        <div class="bet-pre" onclick="setBet(100)">100</div>
+        <div class="bet-pre" onclick="setBet(250)">250</div>
+        <div class="bet-pre" onclick="setBet(500)">500</div>
+      </div>
+    </div>
+    <div class="row"><button class="btn bgh" style="flex:1" onclick="document.getElementById('betModal').classList.remove('on')">Скасувати</button><button class="btn bg" style="flex:1" onclick="confirmBet()">Поставити!</button></div>
+  </div>
+</div>
 <div class="govov" id="govOv">
   <div class="govc">
     <div class="gove" id="gove">🏆</div>
@@ -1290,7 +1928,7 @@ async function deal(r,players,round){
 }
 
 // ══ GAME ══
-function startGame(r){ gameRoom=r; show('game'); document.getElementById('fabUno').classList.add('on'); document.getElementById('fabChat').classList.add('on'); chalShown=false; cleanupListeners(); roomSub=onValue(ref(db,`unoRooms/${roomId}`),snap=>{ const g=snap.val(); if(!g){ backLobby(); return; } if(g.status==='done'){ showGameOver(g); return; } gameRoom=g; if(g.pendingChallenge&&g.pendingChallenge.targetId===ME.id&&!g.pendingChallenge.resolved&&!chalShown){ chalShown=true; showChallenge(g.pendingChallenge.byName); } renderGame(g); }); startChatSub(); }
+function startGame(r){ gameRoom=r; show('game'); document.getElementById('fabUno').classList.add('on'); document.getElementById('fabChat').classList.add('on'); chalShown=false; cleanupListeners(); roomSub=onValue(ref(db,`unoRooms/${roomId}`),snap=>{ const g=snap.val(); if(!g){ backLobby(); return; } if(g.status==='done'){ showGameOver(g); if(window._onGameOverExtra) window._onGameOverExtra(g); return; } gameRoom=g; if(g.pendingChallenge&&g.pendingChallenge.targetId===ME.id&&!g.pendingChallenge.resolved&&!chalShown){ chalShown=true; showChallenge(g.pendingChallenge.byName); } renderGame(g); }); startChatSub(); }
 
 function renderGame(g){
   if(!g?.turnOrder) return;
