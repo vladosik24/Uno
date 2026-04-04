@@ -735,6 +735,12 @@ function updateCoinDisplays(){
   });
 }
 
+// ══ SAFE WRITE HELPER ══
+// Removes all undefined values from object before Firebase write
+function cleanObj(obj){
+  return JSON.parse(JSON.stringify(obj, (k,v)=>v===undefined?null:v));
+}
+
 // ══ GAME STATE ══
 let roomId=null, isHost=false, roomSub=null, chatSub=null;
 let maxP=4, maxR=1, wildPend=null, selIdx=null;
@@ -1045,9 +1051,9 @@ window.createClan=async()=>{
   const name=document.getElementById('clanNameI').value.trim(); if(!name) return toast('Введи назву!');
   const tag=document.getElementById('clanTagI').value.trim().toUpperCase().slice(0,3); if(!tag) return toast('Введи тег!');
   const nr=push(ref(db,'unoClans'));
-  await set(nr,{ name,tag,emoji:clanEmoji,leaderId:ME.id,wins:0,level:1,
-    members:{[ME.id]:{name:ME.name,initials:ME.initials,color:myColor(),wins:prf.wins}}
-  });
+  await set(nr,cleanObj({ name,tag,emoji:clanEmoji,leaderId:ME.id,wins:0,level:1,
+    members:{[ME.id]:{name:ME.name||'Гравець',initials:ME.initials||'?',color:myColor(),wins:prf.wins||0}}
+  }));
   prf.clanId=nr.key; savePrf();
   document.getElementById('clanModal').classList.remove('on');
   toast('🏰 Клан створено!'); renderClanSection();
@@ -1088,7 +1094,7 @@ async function loadLb(){
   }catch(e){}
 }
 window.joinLb=async()=>{
-  try{ await update(ref(db,`unoLeaderboard/${ME.id}`),{name:ME.name,initials:ME.initials,photo:ME.photo||null,color:myColor(),wins:prf.wins,games:prf.games,at:Date.now()}); toast('✅ В рейтингу!'); loadLb(); }catch(e){}
+  try{ await update(ref(db,`unoLeaderboard/${ME.id}`),{name:ME.name||'Гравець',initials:ME.initials||'?',photo:(ME.photo&&typeof ME.photo==='string'?ME.photo:null),color:myColor(),wins:prf.wins||0,games:prf.games||0,at:Date.now()}); toast('✅ В рейтингу!'); loadLb(); }catch(e){}
 };
 
 // ══ PROFILE ══
@@ -1153,7 +1159,9 @@ window.findRandom=async()=>{
 async function autoCreateRoom(){
   try{
     const nr=push(ref(db,'unoRooms'));
-    await set(nr,{name:'Рандомна гра 🎲',maxPlayers:4,maxRounds:1,status:'waiting',code:nr.key.slice(-4).toUpperCase(),hostId:ME.id,currentRound:1,scores:{[ME.id]:0},players:{[ME.id]:{name:ME.name,initials:ME.initials,photo:ME.photo||null,hand:[],color:myColor(),shoutedUno:false}},createdAt:Date.now()});
+    const sp=ME.photo&&typeof ME.photo==='string'?ME.photo:null;
+    const sid=ME.id||'unknown_'+Date.now();
+    await set(nr,{name:'Рандомна гра 🎲',maxPlayers:4,maxRounds:1,status:'waiting',code:nr.key.slice(-4).toUpperCase(),hostId:sid,currentRound:1,scores:{[sid]:0},players:{[sid]:{name:ME.name||'Гравець',initials:ME.initials||'?',photo:sp,hand:[],color:myColor(),shoutedUno:false}},createdAt:Date.now()});
     isHost=true; enterRoom(nr.key);
   }catch(e){ toast('❌ Помилка Firebase: '+e.message); }
 }
@@ -1168,20 +1176,24 @@ window.createRoom=async()=>{
   toast('⏳ Створюємо кімнату...');
   try{
     const nr=push(ref(db,'unoRooms'));
+    const safePhoto=ME.photo&&typeof ME.photo==='string'?ME.photo:null;
+    const safeName=ME.name||'Гравець';
+    const safeInitials=ME.initials||'?';
+    const safeId=ME.id||'unknown_'+Date.now();
     const roomData={
-      name,
-      maxPlayers:maxP,
-      maxRounds:maxR,
+      name:name||'Кімната',
+      maxPlayers:maxP||4,
+      maxRounds:maxR||1,
       status:'waiting',
       code:nr.key.slice(-4).toUpperCase(),
-      hostId:ME.id,
+      hostId:safeId,
       currentRound:1,
-      scores:{[ME.id]:0},
+      scores:{[safeId]:0},
       players:{
-        [ME.id]:{
-          name:ME.name,
-          initials:ME.initials,
-          photo:ME.photo||null,
+        [safeId]:{
+          name:safeName,
+          initials:safeInitials,
+          photo:safePhoto,
           hand:[],
           color:myColor(),
           shoutedUno:false
@@ -1189,7 +1201,7 @@ window.createRoom=async()=>{
       },
       createdAt:Date.now()
     };
-    await set(nr, roomData);
+    await set(nr, cleanObj(roomData));
     isHost=true;
     enterRoom(nr.key);
   } catch(e){
@@ -1205,8 +1217,8 @@ window.joinRoom=async id=>{
   const pl=Object.keys(r.players||{});
   if(pl.length>=r.maxPlayers) return toast('Кімната повна');
   if(pl.includes(ME.id)){ enterRoom(id); return; }
-  await update(ref(db,`unoRooms/${id}/players/${ME.id}`),{name:ME.name,initials:ME.initials,photo:ME.photo||null,hand:[],color:randColor()});
-  await update(ref(db,`unoRooms/${id}/scores`),{[ME.id]:0});
+  await update(ref(db,`unoRooms/${id}/players/${ME.id}`),{name:ME.name||'Гравець',initials:ME.initials||'?',photo:(ME.photo&&typeof ME.photo==='string'?ME.photo:null),hand:[],color:randColor(),shoutedUno:false});
+  if(ME.id) await update(ref(db,`unoRooms/${id}/scores`),{[ME.id]:0});
   isHost=false; enterRoom(id);
 };
 window.shareRoom=()=>{
@@ -1405,8 +1417,8 @@ async function execPlay(card,handIdx,color){
     const coinReward=100+rScore; addCoins(coinReward,'за перемогу!');
     questProgress('wins_today',1); questProgress('wins_week',1); questProgress('streak_week',1);
     savePrf();
-    update(ref(db,`unoLeaderboard/${ME.id}`),{name:ME.name,initials:ME.initials,photo:ME.photo||null,color:myColor(),wins:prf.wins,games:prf.games,at:Date.now()});
-    if(prf.clanId) update(ref(db,`unoClans/${prf.clanId}/members/${ME.id}`),{wins:prf.wins});
+    update(ref(db,`unoLeaderboard/${ME.id}`),{name:ME.name,initials:ME.initials,photo:(ME.photo&&typeof ME.photo==="string"?ME.photo:null),color:myColor(),wins:prf.wins||0,games:prf.games,at:Date.now()});
+    if(prf.clanId&&ME.id) update(ref(db,`unoClans/${prf.clanId}/members/${ME.id}`),{wins:prf.wins||0,name:ME.name||'Гравець',initials:ME.initials||'?'});
     if(nextRound>(g.maxRounds||1)){
       await update(ref(db,`unoRooms/${roomId}`),{status:'done',winnerId:ME.id,winnerName:ME.name,scores:newScores,[`players/${ME.id}/hand`]:myHand});
     } else {
@@ -1467,9 +1479,9 @@ function updateDot(){ const d=document.getElementById('cdot'); d.textContent=unr
 function esc(t){ return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 window.openChat=()=>{ chatOpen=true; unread=0; updateDot(); document.getElementById('chatOv').classList.add('on'); document.getElementById('chatMsgs').scrollTop=9999; };
 window.closeChat=()=>{ chatOpen=false; document.getElementById('chatOv').classList.remove('on'); };
-window.sendMsg=async()=>{ const inp=document.getElementById('chatInp'),t=inp.value.trim(); if(!t||!roomId) return; inp.value=''; await set(push(ref(db,`unoChat/${roomId}`)),{uid:ME.id,name:ME.name,initials:ME.initials,photo:ME.photo||null,color:gameRoom?.players?.[ME.id]?.color||'#2e3358',text:t,ts:Date.now()}); };
+window.sendMsg=async()=>{ const inp=document.getElementById('chatInp'),t=inp.value.trim(); if(!t||!roomId) return; inp.value=''; await set(push(ref(db,`unoChat/${roomId}`)),{uid:ME.id,name:ME.name,initials:ME.initials,photo:(ME.photo&&typeof ME.photo==="string"?ME.photo:null),color:gameRoom?.players?.[ME.id]?.color||'#2e3358',text:t,ts:Date.now()}); };
 document.getElementById('chatInp').addEventListener('keydown',e=>{ if(e.key==='Enter') window.sendMsg(); });
-window.sendReact=async emoji=>{ if(!roomId) return; await set(push(ref(db,`unoChat/${roomId}`)),{uid:ME.id,name:ME.name,initials:ME.initials,photo:ME.photo||null,color:gameRoom?.players?.[ME.id]?.color||'#2e3358',text:emoji,ts:Date.now()}); const el=document.createElement('div'); el.className='freact'; el.textContent=emoji; el.style.cssText=`left:${15+Math.random()*70}%;bottom:220px`; document.body.appendChild(el); setTimeout(()=>el.remove(),1700); };
+window.sendReact=async emoji=>{ if(!roomId) return; await set(push(ref(db,`unoChat/${roomId}`)),{uid:ME.id,name:ME.name,initials:ME.initials,photo:(ME.photo&&typeof ME.photo==="string"?ME.photo:null),color:gameRoom?.players?.[ME.id]?.color||'#2e3358',text:emoji,ts:Date.now()}); const el=document.createElement('div'); el.className='freact'; el.textContent=emoji; el.style.cssText=`left:${15+Math.random()*70}%;bottom:220px`; document.body.appendChild(el); setTimeout(()=>el.remove(),1700); };
 
 // ── GAME OVER ──
 function showGameOver(g){
@@ -1510,7 +1522,21 @@ async function syncFB(){
   try{
     const r=ref(db,`unoProfiles/${ME.id}`); const snap=await get(r); const d=snap.val();
     if(d){ prf.wins=Math.max(prf.wins,d.wins||0); prf.games=Math.max(prf.games,d.games||0); prf.coins=Math.max(prf.coins,d.coins||0); }
-    await update(r,{name:ME.name,initials:ME.initials,photo:ME.photo||null,color:myColor(),...prf,at:Date.now()});
+    await update(r,{
+      name:ME.name||'Гравець',
+      initials:ME.initials||'?',
+      photo:(ME.photo&&typeof ME.photo==='string'?ME.photo:null),
+      color:myColor(),
+      wins:prf.wins||0,
+      games:prf.games||0,
+      unoCount:prf.unoCount||0,
+      cards:prf.cards||0,
+      score:prf.score||0,
+      coins:prf.coins||0,
+      streak:prf.streak||0,
+      maxStreak:prf.maxStreak||0,
+      at:Date.now()
+    });
   }catch(e){}
 }
 
