@@ -736,6 +736,14 @@ function updateCoinDisplays(){
 }
 
 // ══ SAFE WRITE HELPER ══
+// Firebase doesn't accept empty arrays - use {} for empty hands
+// Convert hand from Firebase (may be {} or array) to JS array
+function getHand(player){
+  if(!player||!player.hand) return [];
+  if(Array.isArray(player.hand)) return player.hand;
+  if(typeof player.hand==='object') return Object.values(player.hand);
+  return [];
+}
 // Removes all undefined values from object before Firebase write
 function cleanObj(obj){
   return JSON.parse(JSON.stringify(obj, (k,v)=>v===undefined?null:v));
@@ -1161,7 +1169,7 @@ async function autoCreateRoom(){
     const nr=push(ref(db,'unoRooms'));
     const sp=ME.photo&&typeof ME.photo==='string'?ME.photo:null;
     const sid=ME.id||'unknown_'+Date.now();
-    await set(nr,{name:'Рандомна гра 🎲',maxPlayers:4,maxRounds:1,status:'waiting',code:nr.key.slice(-4).toUpperCase(),hostId:sid,currentRound:1,scores:{[sid]:0},players:{[sid]:{name:ME.name||'Гравець',initials:ME.initials||'?',photo:sp,hand:[],color:myColor(),shoutedUno:false}},createdAt:Date.now()});
+    await set(nr,{name:'Рандомна гра 🎲',maxPlayers:4,maxRounds:1,status:'waiting',code:nr.key.slice(-4).toUpperCase(),hostId:sid,currentRound:1,scores:{[sid]:0},players:{[sid]:{name:ME.name||'Гравець',initials:ME.initials||'?',photo:sp,hand:{},color:myColor(),shoutedUno:false}},createdAt:Date.now()});
     isHost=true; enterRoom(nr.key);
   }catch(e){ toast('❌ Помилка Firebase: '+e.message); }
 }
@@ -1194,7 +1202,7 @@ window.createRoom=async()=>{
           name:safeName,
           initials:safeInitials,
           photo:safePhoto,
-          hand:[],
+          hand:{},
           color:myColor(),
           shoutedUno:false
         }
@@ -1217,7 +1225,7 @@ window.joinRoom=async id=>{
   const pl=Object.keys(r.players||{});
   if(pl.length>=r.maxPlayers) return toast('Кімната повна');
   if(pl.includes(ME.id)){ enterRoom(id); return; }
-  await update(ref(db,`unoRooms/${id}/players/${ME.id}`),{name:ME.name||'Гравець',initials:ME.initials||'?',photo:(ME.photo&&typeof ME.photo==='string'?ME.photo:null),hand:[],color:randColor(),shoutedUno:false});
+  await update(ref(db,`unoRooms/${id}/players/${ME.id}`),{name:ME.name||'Гравець',initials:ME.initials||'?',photo:(ME.photo&&typeof ME.photo==='string'?ME.photo:null),hand:{},color:randColor(),shoutedUno:false});
   if(ME.id) await update(ref(db,`unoRooms/${id}/scores`),{[ME.id]:0});
   isHost=false; enterRoom(id);
 };
@@ -1275,7 +1283,7 @@ function startGame(r){ gameRoom=r; show('game'); document.getElementById('fabUno
 function renderGame(g){
   if(!g?.turnOrder) return;
   const top=g.discard?.[g.discard.length-1];
-  const myHand=g.players?.[ME.id]?.hand||[];
+  const myHand=getHand(g.players?.[ME.id]);
   const curPid=g.turnOrder[g.turnIndex%g.turnOrder.length];
   const isMe=curPid===ME.id;
   const tc=document.getElementById('topCard'); tc.className=cc(top);
@@ -1288,7 +1296,7 @@ function renderGame(g){
   document.getElementById('gRd').textContent=`Раунд ${g.currentRound||1}/${g.maxRounds||1}`;
   // opponents
   const strip=document.getElementById('opstrip'); strip.innerHTML='';
-  g.turnOrder.forEach(pid=>{ if(pid===ME.id) return; const p=g.players?.[pid]; if(!p) return; const div=document.createElement('div'); div.className='opch'+(pid===curPid?' cur':''); const av=p.photo?`<img src="${p.photo}">`:(p.initials||'?'); div.innerHTML=`<div class="opav" style="background:${p.color}">${av}<div class="opcnt">${(p.hand||[]).length}</div></div><div class="opnm">${p.name}</div><div class="oppt">${g.scores?.[pid]||0}pt</div>`; strip.appendChild(div); });
+  g.turnOrder.forEach(pid=>{ if(pid===ME.id) return; const p=g.players?.[pid]; if(!p) return; const div=document.createElement('div'); div.className='opch'+(pid===curPid?' cur':''); const av=p.photo?`<img src="${p.photo}">`:(p.initials||'?'); div.innerHTML=`<div class="opav" style="background:${p.color}">${av}<div class="opcnt">${getHand(p).length}</div></div><div class="opnm">${p.name}</div><div class="oppt">${g.scores?.[pid]||0}pt</div>`; strip.appendChild(div); });
   document.getElementById('myCount').textContent=myHand.length;
   renderHand(myHand,top,isMe);
   document.getElementById('drawCard').className='uc cbk dcard'+(isMe?'':' dim');
@@ -1349,7 +1357,7 @@ async function useBoost(key){
     const others=g.turnOrder.filter(p=>p!==ME.id);
     if(!others.length) return;
     const op=g.players?.[others[0]];
-    const hand=op?.hand||[];
+    const hand=getHand(op);
     if(hand.length) toast(`👁 ${op?.name} має: ${hand.slice(0,3).map(cl).join(', ')}...`);
   } else if(key==='shield'){
     toast('🛡 Щит активний! Захищений від +4');
@@ -1360,8 +1368,8 @@ async function useBoost(key){
     const others=gr.turnOrder.filter(p=>p!==ME.id);
     if(!others.length) return;
     const op=others[Math.floor(Math.random()*others.length)];
-    const myH=[...(gr.players[ME.id].hand||[])];
-    const opH=[...(gr.players[op].hand||[])];
+    const myH=[...getHand(gr.players[ME.id])];
+    const opH=[...getHand(gr.players[op])];
     await update(ref(db,`unoRooms/${roomId}`),{[`players/${ME.id}/hand`]:opH,[`players/${op}/hand`]:myH});
     toast(`🔄 Обмінявся рукою з ${gr.players[op]?.name}!`);
   } else if(key==='double'){
@@ -1391,7 +1399,7 @@ window.drawCard=async()=>{
   const deck=[...(g.deck||[])]; if(!deck.length) return toast('Колода порожня!');
   const drawn=deck.shift(); sndDraw();
   prf.cards++; questProgress('cards_today',1); savePrf();
-  await update(ref(db,`unoRooms/${roomId}`),{deck,[`players/${ME.id}/hand`]:[...(g.players[ME.id].hand||[]),drawn],turnIndex:nextTurn(g),turnStartTime:Date.now()});
+  await update(ref(db,`unoRooms/${roomId}`),{deck,[`players/${ME.id}/hand`]:[...getHand(g.players[ME.id]),drawn],turnIndex:nextTurn(g),turnStartTime:Date.now()});
   toast('Взяв: '+cl(drawn)); shoutedUno=false;
 };
 
@@ -1406,11 +1414,11 @@ async function execPlay(card,handIdx,color){
   clearInterval(timerInt);
   const snap=await get(ref(db,`unoRooms/${roomId}`));
   const g=snap.val(); if(!g) return;
-  const myHand=[...(g.players[ME.id].hand||[])]; myHand.splice(handIdx,1); selIdx=null;
+  const myHand=[...getHand(g.players[ME.id])]; myHand.splice(handIdx,1); selIdx=null;
   prf.cards++; questProgress('cards_today',1); savePrf();
 
   if(myHand.length===0){
-    let rScore=0; Object.entries(g.players).forEach(([pid,p])=>{ if(pid!==ME.id)(p.hand||[]).forEach(c=>{ rScore+=cScore(c); }); });
+    let rScore=0; Object.entries(g.players).forEach(([pid,p])=>{ if(pid!==ME.id)getHand(p).forEach(c=>{ rScore+=cScore(c); }); });
     const newScores={...(g.scores||{}),[ME.id]:(g.scores?.[ME.id]||0)+rScore};
     const nextRound=(g.currentRound||1)+1;
     prf.wins++; prf.score+=rScore; prf.streak++; prf.maxStreak=Math.max(prf.maxStreak,prf.streak); prf.games++;
@@ -1443,7 +1451,7 @@ async function execPlay(card,handIdx,color){
     // Check shield boost
     const np=players[nextTurn(g)%players.length];
     const nhSnap=await get(ref(db,`unoProfiles/${np}`)); // simplified
-    const nh=[...(g.players[np].hand||[])];
+    const nh=[...getHand(g.players[np])];
     if(deck.length>=2){ nh.push(deck.shift(),deck.shift()); }
     upd[`players/${np}/hand`]=nh; upd.deck=deck; upd.turnIndex=nextTurn(g,2); toast(`+2 для ${g.players[np]?.name}!`);
   } else if(card.value==='wild+4'){
@@ -1463,9 +1471,9 @@ function showChallenge(by){ document.getElementById('chalTxt').textContent=`${by
 window.replyChallenge=async(ch)=>{
   document.getElementById('chalOv').classList.remove('on'); chalShown=false;
   const snap=await get(ref(db,`unoRooms/${roomId}`)); const g=snap.val(); if(!g?.pendingChallenge) return;
-  const pc=g.pendingChallenge,deck=[...(g.deck||[])],myH=[...(g.players[ME.id].hand||[])],byH=[...(g.players[pc.byId]?.hand||[])];
+  const pc=g.pendingChallenge,deck=[...(g.deck||[])],myH=[...getHand(g.players[ME.id])],byH=[...getHand(g.players[pc.byId])];
   const upd={'pendingChallenge/resolved':true};
-  if(ch){ const bluff=(pc.prevHand||[]).some(c=>c.color!=='wild'&&canPlay(c,g.discard[g.discard.length-2])); if(bluff){ for(let i=0;i<4&&deck.length;i++) byH.push(deck.shift()); upd[`players/${pc.byId}/hand`]=byH; toast('✅ Блеф! '+pc.byName+' бере 4!'); } else { for(let i=0;i<6&&deck.length;i++) myH.push(deck.shift()); upd[`players/${ME.id}/hand`]=myH; toast('❌ Не блеф — береш 6...'); } }
+  if(ch){ const bluff=(Array.isArray(pc.prevHand)?pc.prevHand:Object.values(pc.prevHand||{})).some(c=>c.color!=='wild'&&canPlay(c,g.discard[g.discard.length-2])); if(bluff){ for(let i=0;i<4&&deck.length;i++) byH.push(deck.shift()); upd[`players/${pc.byId}/hand`]=byH; toast('✅ Блеф! '+pc.byName+' бере 4!'); } else { for(let i=0;i<6&&deck.length;i++) myH.push(deck.shift()); upd[`players/${ME.id}/hand`]=myH; toast('❌ Не блеф — береш 6...'); } }
   else { for(let i=0;i<4&&deck.length;i++) myH.push(deck.shift()); upd[`players/${ME.id}/hand`]=myH; }
   upd.deck=deck; await update(ref(db,`unoRooms/${roomId}`),upd);
 };
