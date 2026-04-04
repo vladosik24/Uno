@@ -1878,9 +1878,42 @@ window.joinRoom=async id=>{
     if(!r) return toast('Кімната не знайдена');
     const pl=Object.keys(r.players||{});
     const alreadyIn=pl.includes(String(ME.id));
+    // ALWAYS set roomId first
+    roomId=id;
     if(alreadyIn){
-      if(r.status==='playing'){ startGame(r); return; }
-      enterRoom(id); return;
+      if(r.status==='playing'){
+        // Rejoin active game
+        cleanupListeners();
+        show('game');
+        document.getElementById('fabUno').classList.add('on');
+        document.getElementById('fabChat').classList.add('on');
+        chalShown=false;
+        gameRoom=r;
+        renderGame(r);
+        // Re-subscribe
+        roomSub=onValue(ref(db,`unoRooms/${id}`),snap2=>{
+          const g=snap2.val();
+          if(!g){ backLobby(); return; }
+          if(g.status==='done'){ showGameOver(g); if(window._onGameOverExtra) window._onGameOverExtra(g); return; }
+          gameRoom=g;
+          if(g.pendingChallenge&&g.pendingChallenge.targetId===ME.id&&!g.pendingChallenge.resolved&&!chalShown){ chalShown=true; showChallenge(g.pendingChallenge.byName); }
+          renderGame(g);
+        });
+        startChatSub();
+        return;
+      }
+      // In waiting room
+      cleanupListeners();
+      show('wait');
+      roomSub=onValue(ref(db,`unoRooms/${id}`),snap2=>{
+        const r2=snap2.val();
+        if(!r2){ backLobby(); return; }
+        if(r2.status==='playing'){ startGame(r2); return; }
+        if(r2.status==='done') return;
+        renderWait(r2);
+      });
+      renderWait(r);
+      return;
     }
     if(r.status==='playing') return toast('Гра вже йде');
     if(r.status==='done') return toast('Гра завершена');
@@ -1892,8 +1925,9 @@ window.joinRoom=async id=>{
       hand:'none',color:randColor(),shoutedUno:false
     });
     if(ME.id) await update(ref(db,`unoRooms/${id}/scores`),{[ME.id]:0});
-    isHost=false; enterRoom(id);
-  }catch(e){ toast('Помилка: '+e.message); }
+    isHost=false;
+    enterRoom(id);
+  }catch(e){ console.error('joinRoom:',e); toast('Помилка: '+e.message); }
 };
 window.shareRoom=()=>{
   if(!roomId) return;
