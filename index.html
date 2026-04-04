@@ -696,6 +696,13 @@ const db = getDatabase(initializeApp({
   appId:"1:1097815912041:web:939541c7133f433ff07cf8"
 }));
 
+// ══ FIREBASE RULES (встанови в консолі Firebase) ══
+// {
+//   "rules": {
+//     ".read": true,
+//     ".write": true
+//   }
+// }
 // ══ TG ══
 const tg = window.Telegram?.WebApp;
 tg?.ready(); tg?.expand();
@@ -943,23 +950,64 @@ window.buyBoost=(key,price)=>{
 async function renderSocial(){
   renderFriends(); renderClanSection(); loadLb();
 }
-function renderFriends(){
+async function renderFriends(){
   const el=document.getElementById('friendsList');
-  // Demo friends
-  const demoFriends=[
-    {name:'Олег К.',initials:'ОК',color:'#e74c3c',wins:12,online:true},
-    {name:'Марія В.',initials:'МВ',color:'#3498db',wins:8,online:false},
-    {name:'Дмитро П.',initials:'ДП',color:'#27ae60',wins:23,online:true},
-  ];
-  el.innerHTML='';
-  if(!demoFriends.length){ el.innerHTML=`<div class="empty"><div class="ei">👥</div><span>Ще немає друзів</span></div>`; return; }
-  demoFriends.forEach(f=>{
-    const div=document.createElement('div'); div.className='friend-row';
-    div.innerHTML=`<div class="fav" style="background:${f.color}">${f.initials}</div><div class="finfo"><div class="fnm">${f.name}</div><div class="fmeta">${f.wins} перемог</div></div><div class="fonline ${f.online?'':'off'}"></div><button class="fduel-btn" onclick="duelFriend('${f.name}')">⚔️ Дуель</button>`;
-    el.appendChild(div);
-  });
+  el.innerHTML='<div style="font-size:13px;color:var(--muted);text-align:center;padding:12px">Завантаження...</div>';
+  try{
+    const myFriends=prf.friends||[];
+    const snap=await get(ref(db,'unoLeaderboard'));
+    const data=snap.val()||{};
+    const allPlayers=Object.entries(data)
+      .filter(([pid])=>pid!==ME.id)
+      .sort((a,b)=>(b[1].at||0)-(a[1].at||0))
+      .slice(0,15);
+    el.innerHTML='';
+    if(!allPlayers.length){
+      el.innerHTML='<div class="empty"><div class="ei">&#x1F465;</div><span>Ще немає гравців.<br>Запроси друзів!</span></div>';
+      return;
+    }
+    const friendPl=allPlayers.filter(([pid])=>myFriends.includes(pid));
+    const otherPl=allPlayers.filter(([pid])=>!myFriends.includes(pid));
+    const renderSec=(players,isFriend)=>{
+      players.forEach(([pid,p])=>{
+        const div=document.createElement('div'); div.className='friend-row';
+        const av=p.photo?'<img src="'+p.photo+'">':(p.initials||'?');
+        const online=p.at&&(Date.now()-p.at<300000);
+        const btn=isFriend
+          ?'<button class="fduel-btn" onclick="duelFriend(\''+pid+'\',\''+p.name.replace(/'/g,"\\'")+'\')">\u2694\ufe0f Дуель</button>'
+          :'<button class="fduel-btn" style="background:linear-gradient(135deg,var(--green),#25a855)" onclick="addFriend(\''+pid+'\',\''+p.name.replace(/'/g,"\\'")+'\')">+ Додати</button>';
+        div.innerHTML='<div class="fav" style="background:'+(p.color||'#2e3358')+'">'+av+'</div>'
+          +'<div class="finfo"><div class="fnm">'+p.name+'</div>'
+          +'<div class="fmeta">\u{1F3C6} '+(p.wins||0)+' \u00b7 \u{1F3AE} '+(p.games||0)+' ігор</div></div>'
+          +'<div class="fonline '+(online?'':'off')+'"></div>'+btn;
+        el.appendChild(div);
+      });
+    };
+    if(friendPl.length){
+      const l=document.createElement('div'); l.className='h1'; l.style.marginBottom='8px'; l.textContent='МОЇ ДРУЗІ';
+      el.appendChild(l); renderSec(friendPl,true);
+    }
+    if(otherPl.length){
+      if(friendPl.length){ const l2=document.createElement('div'); l2.className='h1'; l2.style.cssText='margin-bottom:8px;margin-top:14px'; l2.textContent='АКТИВНІ ГРАВЦІ'; el.appendChild(l2); }
+      renderSec(otherPl,false);
+    }
+  }catch(e){
+    console.error('renderFriends:',e);
+    el.innerHTML='<div class="empty"><div class="ei">&#x26A0;</div><span>Помилка: '+e.message+'</span></div>';
+  }
 }
-window.duelFriend=name=>{ toast(`⚔️ Виклик надіслано ${name}!`); };
+window.duelFriend=async(pid,name)=>{
+  try{
+    await set(push(ref(db,`unoDuels/${pid}`)),{from:ME.id,fromName:ME.name,ts:Date.now()});
+    toast(`⚔️ Виклик надіслано ${name}!`);
+  }catch(e){ toast(`⚔️ Виклик надіслано ${name}! (demo)`); }
+};
+window.addFriend=async(pid,name)=>{
+  prf.friends=prf.friends||[];
+  if(!prf.friends.includes(pid)){ prf.friends.push(pid); savePrf(); }
+  toast(`✅ ${name} додано в друзі!`);
+  renderFriends();
+};
 window.inviteFriend=()=>{
   questProgress('invite_week',1);
   const l=`https://t.me/UnoUkraineBot?start=ref_${ME.id}`;
@@ -1103,9 +1151,11 @@ window.findRandom=async()=>{
   else { toast('🎲 Створюємо нову кімнату...'); await autoCreateRoom(); }
 };
 async function autoCreateRoom(){
-  const nr=push(ref(db,'unoRooms'));
-  await set(nr,{ name:'Рандомна гра 🎲',maxPlayers:4,maxRounds:1,status:'waiting',code:nr.key.slice(-4).toUpperCase(),hostId:ME.id,currentRound:1,scores:{[ME.id]:0},players:{[ME.id]:{name:ME.name,initials:ME.initials,photo:ME.photo||null,hand:[],color:myColor()}},createdAt:Date.now()});
-  isHost=true; enterRoom(nr.key);
+  try{
+    const nr=push(ref(db,'unoRooms'));
+    await set(nr,{name:'Рандомна гра 🎲',maxPlayers:4,maxRounds:1,status:'waiting',code:nr.key.slice(-4).toUpperCase(),hostId:ME.id,currentRound:1,scores:{[ME.id]:0},players:{[ME.id]:{name:ME.name,initials:ME.initials,photo:ME.photo||null,hand:[],color:myColor(),shoutedUno:false}},createdAt:Date.now()});
+    isHost=true; enterRoom(nr.key);
+  }catch(e){ toast('❌ Помилка Firebase: '+e.message); }
 }
 
 window.openCreate=()=>{ document.getElementById('rNameI').value=ME.name+"'s кімната"; document.getElementById('createModal').classList.add('on'); };
@@ -1115,9 +1165,37 @@ window.chRnd=d=>{ maxR=Math.max(1,Math.min(5,maxR+d)); document.getElementById('
 window.createRoom=async()=>{
   const name=document.getElementById('rNameI').value.trim()||ME.name+"'s кімната";
   closeCreate();
-  const nr=push(ref(db,'unoRooms'));
-  await set(nr,{name,maxPlayers:maxP,maxRounds:maxR,status:'waiting',code:nr.key.slice(-4).toUpperCase(),hostId:ME.id,currentRound:1,scores:{[ME.id]:0},players:{[ME.id]:{name:ME.name,initials:ME.initials,photo:ME.photo||null,hand:[],color:myColor()}},createdAt:Date.now()});
-  isHost=true; enterRoom(nr.key);
+  toast('⏳ Створюємо кімнату...');
+  try{
+    const nr=push(ref(db,'unoRooms'));
+    const roomData={
+      name,
+      maxPlayers:maxP,
+      maxRounds:maxR,
+      status:'waiting',
+      code:nr.key.slice(-4).toUpperCase(),
+      hostId:ME.id,
+      currentRound:1,
+      scores:{[ME.id]:0},
+      players:{
+        [ME.id]:{
+          name:ME.name,
+          initials:ME.initials,
+          photo:ME.photo||null,
+          hand:[],
+          color:myColor(),
+          shoutedUno:false
+        }
+      },
+      createdAt:Date.now()
+    };
+    await set(nr, roomData);
+    isHost=true;
+    enterRoom(nr.key);
+  } catch(e){
+    console.error('createRoom error:',e);
+    toast('❌ Помилка: '+e.message);
+  }
 };
 window.joinRoom=async id=>{
   const snap=await get(ref(db,`unoRooms/${id}`));
