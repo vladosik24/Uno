@@ -888,6 +888,7 @@ let roomId=null, isHost=false, roomSub=null, chatSub=null;
 let maxP=4, maxR=1, wildPend=null, selIdx=null;
 let shoutedUno=false, gameRoom=null, chatOpen=false, unread=0, chalShown=false;
 let timerInt=null, timerSec=30, activeBoosts={};
+let pendingStack=0, currentBet=0, rule70=false, clanChatSub=null;
 
 // ══ SCREENS ══
 function show(id){ document.querySelectorAll('.scr').forEach(s=>s.classList.remove('on')); document.getElementById('s-'+id).classList.add('on'); }
@@ -1763,7 +1764,7 @@ setTimeout(()=>{
 // ═══════════════════════════════════════════
 // ── TIMER SYSTEM ──
 // ═══════════════════════════════════════════
-timerInt=null, timerSec=30;
+// timerInt, timerSec declared above
 const TURN_TIME=30;
 
 function startTurnTimer(g,isMe){
@@ -2098,7 +2099,7 @@ function trackCardPlayed(card){
 }
 
 // Track game length
-gameStartTime=0, gameTurns=0;
+let gameStartTime=0, gameTurns=0;
 function trackGameStart(){ gameStartTime=Date.now(); gameTurns=0; }
 function trackTurn(){ gameTurns++; }
 function trackGameEnd(isWin){
