@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Уно 🇺🇦 — Міні-застосунок</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Екран старту -->
+    <div id="start-screen" class="screen">
+      <div class="logo">
+        <div class="flag">🇺🇦</div>
+        <h1>УНО</h1>
+        <p class="subtitle">українська версія з ботами</p>
+      </div>
+      <div class="menu">
+        <label>Кількість ботів:</label>
+        <div class="bot-select">
+          <button class="bot-btn active" data-bots="2">2</button>
+          <button class="bot-btn" data-bots="3">3</button>
+        </div>
+        <button id="start-btn" class="primary-btn">Почати гру</button>
+        <button id="rules-btn" class="secondary-btn">Правила</button>
+      </div>
+      <div class="footer">Зроблено для Telegram Mini Apps</div>
+    </div>
+
+    <!-- Екран правил -->
+    <div id="rules-screen" class="screen hidden">
+      <h2>Правила Уно</h2>
+      <div class="rules-content">
+        <p><strong>Мета:</strong> позбутися всіх карт першим.</p>
+        <p><strong>Хід:</strong> клади карту того ж кольору або того ж значення. Якщо не можеш — бери з колоди.</p>
+        <ul>
+          <li><strong>Пропуск</strong> — наступний гравець пропускає хід</li>
+          <li><strong>Реверс</strong> — змінює напрямок гри</li>
+          <li><strong>+2</strong> — наступний бере 2 карти і пропускає</li>
+          <li><strong>Дика</strong> — обираєш колір</li>
+          <li><strong>+4</strong> — наступний бере 4 і ти обираєш колір</li>
+        </ul>
+        <p>Коли залишається 1 карта — обов’язково кричи <strong>«УНО!»</strong></p>
+      </div>
+      <button id="back-btn" class="primary-btn">Назад</button>
+    </div>
+
+    <!-- Ігровий екран -->
+    <div id="game-screen" class="screen hidden">
+      <header class="game-header">
+        <div class="direction" id="direction">→</div>
+        <div class="turn-info" id="turn-info">Твій хід</div>
+        <button id="uno-btn" class="uno-btn hidden">УНО!</button>
+      </header>
+
+      <!-- Супротивники -->
+      <div id="opponents" class="opponents"></div>
+
+      <!-- Центральна зона -->
+      <div class="center-area">
+        <div class="pile draw-pile" id="draw-pile" title="Взяти карту">
+          <div class="card back"></div>
+          <span id="deck-count">0</span>
+        </div>
+        <div class="pile discard-pile" id="discard-pile"></div>
+      </div>
+
+      <!-- Твоя рука -->
+      <div class="player-area">
+        <div class="player-label">Ти <span id="player-cards-count"></span></div>
+        <div id="player-hand" class="hand"></div>
+      </div>
+
+      <!-- Вибір кольору -->
+      <div id="color-picker" class="color-picker hidden">
+        <p>Обери колір:</p>
+        <div class="colors">
+          <button class="color-btn red" data-color="red"></button>
+          <button class="color-btn blue" data-color="blue"></button>
+          <button class="color-btn green" data-color="green"></button>
+          <button class="color-btn yellow" data-color="yellow"></button>
+        </div>
+      </div>
+
+      <!-- Повідомлення -->
+      <div id="message" class="message hidden"></div>
+    </div>
+
+    <!-- Екран кінця гри -->
+    <div id="end-screen" class="screen hidden">
+      <div class="end-content">
+        <h2 id="end-title">Перемога!</h2>
+        <p id="end-text"></p>
+        <button id="restart-btn" class="primary-btn">Грати знову</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>
